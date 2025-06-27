@@ -1,0 +1,445 @@
+body {
+    font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif;
+    line-height: 1.6;
+    margin: 0;
+    padding: 0;
+    background-color: #eef1f5; /* Lighter, cooler background */
+    color: #333;
+    display: flex;
+    justify-content: center;
+    padding-top: 20px;
+    padding-bottom: 40px;
+}
+
+#app-container {
+    width: 100%;
+    max-width: 900px; /* Increased max-width for better readability on larger screens */
+    margin: 20px;
+    padding: 30px; /* Increased padding */
+    background-color: #ffffff;
+    border-radius: 12px; /* Softer radius */
+    box-shadow: 0 8px 25px rgba(0, 0, 0, 0.1); /* More pronounced shadow */
+}
+
+header {
+    text-align: center;
+    margin-bottom: 20px; /* Adjusted margin */
+    padding-bottom: 20px;
+    border-bottom: 2px solid #005A9C; /* Primary color accent */
+}
+
+header h1 {
+    color: #003366; /* Darker blue for heading */
+    margin: 0;
+    font-size: 1.8em; /* Slightly larger heading */
+    font-weight: 600;
+}
+
+#file-controls {
+    display: flex;
+    justify-content: flex-start;
+    gap: 10px;
+    margin-bottom: 20px;
+    padding-bottom: 15px;
+    border-bottom: 1px solid #dde4eb;
+    flex-wrap: wrap; /* Allow buttons to wrap on smaller screens */
+}
+
+.control-button {
+    padding: 10px 18px;
+    font-size: 0.95em;
+    font-weight: 500;
+    color: #fff;
+    background-color: #005A9C; /* Primary button color */
+    border: none;
+    border-radius: 5px;
+    cursor: pointer;
+    transition: background-color 0.3s ease, box-shadow 0.3s ease;
+    margin-bottom: 5px; /* Add some margin for wrapped buttons */
+}
+
+.control-button:hover {
+    background-color: #004477; /* Darker shade on hover */
+    box-shadow: 0 2px 8px rgba(0, 0, 0, 0.1);
+}
+
+
+/* Tab Navigation Styles */
+#tab-navigation {
+    display: flex;
+    margin-bottom: 25px;
+    border-bottom: 1px solid #d8e0e7;
+}
+
+.tab-button {
+    padding: 12px 20px;
+    font-size: 1.05em;
+    font-weight: 500;
+    color: #005A9C;
+    background-color: transparent;
+    border: none;
+    border-bottom: 3px solid transparent;
+    cursor: pointer;
+    transition: color 0.3s ease, border-bottom-color 0.3s ease;
+    margin-right: 5px;
+    border-radius: 6px 6px 0 0; /* Rounded top corners */
+}
+
+.tab-button:hover {
+    color: #003366;
+    background-color: #f0f4f8;
+}
+
+.tab-button.active {
+    color: #003366;
+    border-bottom-color: #005A9C;
+    font-weight: 600;
+}
+
+.tab-content {
+    /* Styles for content visibility are handled by JS (display: none/block) */
+}
+
+
+.form-section {
+    margin-bottom: 30px; /* Increased spacing between sections */
+    padding: 25px; /* Increased padding within sections */
+    border: 1px solid #d8e0e7; /* Softer border color */
+    border-radius: 8px;
+    background-color: #fbfcfe; /* Very light background for sections */
+    transition: box-shadow 0.3s ease;
+}
+
+.form-section:hover {
+    box-shadow: 0 4px 15px rgba(0, 0, 0, 0.08);
+}
+
+.form-section h2 {
+    font-size: 1.4em; /* Larger section titles */
+    color: #005A9C; /* Primary color for section titles */
+    margin-top: 0;
+    margin-bottom: 25px; /* Increased spacing below title */
+    padding-bottom: 10px;
+    border-bottom: 1px solid #cce0f0; /* Lighter border under section title */
+    display: flex;
+    align-items: center;
+}
+
+.section-number {
+    display: inline-block;
+    background-color: #005A9C;
+    color: white;
+    padding: 4px 10px;
+    border-radius: 4px;
+    margin-right: 12px;
+    font-size: 0.9em;
+    font-weight: bold;
+}
+
+.form-field {
+    margin-bottom: 20px; /* Increased spacing between fields */
+}
+
+/* Initially hide conditional system select containers */
+#nu-me-system-select-container,
+#nu-nh-system-select-container,
+#fge-system-select-container {
+    display: none;
+}
+
+
+.form-field > label {
+    display: block;
+    margin-bottom: 8px; /* Increased spacing for label */
+    font-weight: 600; /* Bolder labels */
+    color: #2c3e50; /* Darker, more professional label color */
+    font-size: 0.95em;
+}
+
+.form-field input[type="text"],
+.form-field input[type="number"],
+.form-field select,
+.form-field textarea,
+.form-field input[type="file"] {
+    width: 100%;
+    padding: 12px;
+    border: 1px solid #bcccdc;
+    border-radius: 6px;
+    box-sizing: border-box;
+    font-size: 1em;
+    background-color: #fff;
+    color: #333;
+    transition: border-color 0.3s ease, box-shadow 0.3s ease;
+}
+
+.form-field input[type="file"] {
+    padding: 8px 12px;
+    line-height: 1.5;
+}
+
+.form-field input[type="file"]::file-selector-button {
+    font-weight: 500;
+    color: #005A9C;
+    background-color: #eef1f5;
+    border: 1px solid #bcccdc;
+    padding: 8px 15px;
+    border-radius: 4px;
+    cursor: pointer;
+    transition: background-color 0.2s ease;
+    margin-right: 10px;
+}
+
+.form-field input[type="file"]::file-selector-button:hover {
+    background-color: #d8e0e7;
+}
+
+
+.form-field input[type="text"]::placeholder,
+.form-field input[type="number"]::placeholder,
+.form-field textarea::placeholder {
+    color: #8899a8;
+    font-style: italic;
+}
+
+
+.form-field textarea {
+    min-height: 100px;
+    resize: vertical;
+}
+
+.form-field input[type="text"]:focus,
+.form-field input[type="number"]:focus,
+.form-field select:focus,
+.form-field textarea:focus,
+.form-field input[type="file"]:focus {
+    border-color: #007bff;
+    outline: none;
+    box-shadow: 0 0 0 3px rgba(0, 123, 255, 0.15);
+}
+
+.form-field select option[disabled] {
+    color: #999;
+}
+
+
+.checkbox-group-fieldset,
+.radio-group-fieldset {
+    border: 1px solid #bcccdc;
+    padding: 15px 20px 20px 20px;
+    border-radius: 6px;
+    margin-top: 8px;
+}
+
+.checkbox-group-fieldset legend,
+.radio-group-fieldset legend {
+    font-weight: 600;
+    color: #2c3e50;
+    padding: 0 8px;
+    font-size: 0.95em;
+    margin-left: -8px; /* Align with label text start */
+}
+
+.checkbox-item,
+.radio-item { /* Unified styling for checkbox and radio items */
+    display: flex;
+    align-items: center;
+    margin-bottom: 12px;
+    margin-left: 5px;
+}
+
+.checkbox-item:last-child,
+.radio-item:last-child {
+    margin-bottom: 0;
+}
+
+.checkbox-item input[type="checkbox"],
+.radio-item input[type="radio"] {
+    margin-right: 12px;
+    width: 18px;
+    height: 18px;
+    flex-shrink: 0;
+    accent-color: #005A9C;
+    cursor: pointer;
+}
+
+.checkbox-item label,
+.radio-item label {
+    font-weight: normal;
+    color: #333;
+    margin-bottom: 0;
+    display: inline;
+    line-height: 1.4;
+    cursor: pointer;
+}
+
+.assessment-options-group {
+    margin-top: 10px;
+    padding: 10px;
+    background-color: #f8f9fa;
+    border: 1px solid #eef1f5;
+    border-radius: 4px;
+}
+.assessment-options-label {
+    display: block;
+    font-weight: 500;
+    color: #334b60;
+    margin-bottom: 8px;
+    font-size: 0.9em;
+}
+
+.radio-item-inline {
+    display: inline-flex; /* Use inline-flex for better alignment */
+    align-items: center;
+    margin-right: 20px;
+    margin-bottom: 5px; /* Add some bottom margin if they wrap */
+}
+.radio-item-inline:last-child {
+    margin-right: 0;
+}
+
+.radio-item-inline input[type="radio"] {
+    margin-right: 6px;
+    width: 16px;
+    height: 16px;
+}
+.radio-item-inline label {
+    font-weight: normal;
+    font-size: 0.9em;
+    color: #333;
+    margin-bottom: 0;
+}
+
+
+.file-list-display {
+    margin-top: 10px;
+    padding: 10px;
+    background-color: #f8f9fa;
+    border: 1px dashed #d8e0e7;
+    border-radius: 4px;
+    font-size: 0.9em;
+    color: #555;
+}
+
+.file-list-display .file-list {
+    list-style: none;
+    padding: 0;
+    margin: 0;
+}
+
+.file-list-display .file-list li {
+    padding: 4px 0;
+    border-bottom: 1px solid #eef1f5;
+}
+
+.file-list-display .file-list li:last-child {
+    border-bottom: none;
+}
+
+/* Process Guidelines Specific Styles */
+#process-guidelines-container {
+    padding: 20px;
+    border: 1px solid #d8e0e7;
+    border-radius: 8px;
+    background-color: #fbfcfe;
+}
+
+#process-guidelines-container h2,
+#process-guidelines-container h3,
+#process-guidelines-container h4 {
+    color: #005A9C;
+    margin-top: 1.5em;
+    margin-bottom: 0.8em;
+}
+#process-guidelines-container h2 {
+    font-size: 1.6em;
+    border-bottom: 2px solid #cce0f0;
+    padding-bottom: 0.3em;
+}
+#process-guidelines-container h3 {
+    font-size: 1.3em;
+    border-bottom: 1px solid #dde8f0;
+    padding-bottom: 0.2em;
+}
+#process-guidelines-container h4 {
+    font-size: 1.1em;
+    color: #004477; /* Slightly darker for h4 */
+}
+#process-guidelines-container p {
+    margin-bottom: 1em;
+    color: #333;
+}
+#process-guidelines-container ul {
+    list-style-type: disc;
+    margin-left: 25px;
+    margin-bottom: 1em;
+}
+#process-guidelines-container ul li {
+    margin-bottom: 0.5em;
+}
+#process-guidelines-container strong {
+    color: #003366;
+}
+#process-guidelines-container em {
+    font-style: italic;
+    color: #555;
+}
+
+
+/* Responsive adjustments */
+@media (max-width: 768px) {
+    #app-container {
+        margin: 10px;
+        padding: 20px;
+    }
+
+    header h1 {
+        font-size: 1.6em;
+    }
+
+    #file-controls {
+        flex-direction: column;
+        align-items: stretch;
+    }
+    .control-button {
+        width: 100%;
+        margin-bottom: 5px;
+    }
+    .control-button:last-child {
+        margin-bottom: 0;
+    }
+
+    #tab-navigation {
+        flex-direction: column; /* Stack tabs on smaller screens */
+    }
+    .tab-button {
+        margin-right: 0;
+        margin-bottom: 2px;
+        border-radius: 4px; /* Adjust radius for stacked tabs */
+    }
+    .tab-button.active {
+        border-bottom-color: #005A9C; /* Keep consistent active indicator */
+    }
+
+
+    .form-section h2 {
+        font-size: 1.25em;
+    }
+
+    .form-field input[type="text"],
+    .form-field input[type="number"],
+    .form-field select,
+    .form-field textarea,
+    .form-field input[type="file"] {
+        padding: 10px;
+    }
+
+    .radio-item-inline {
+        display: flex; /* Stack assessment radios on smaller screens */
+        margin-right: 0;
+        margin-bottom: 8px;
+    }
+
+    #process-guidelines-container h2 { font-size: 1.4em; }
+    #process-guidelines-container h3 { font-size: 1.2em; }
+    #process-guidelines-container h4 { font-size: 1.05em; }
+}
