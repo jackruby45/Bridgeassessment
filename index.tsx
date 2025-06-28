@@ -1,9 +1,15 @@
 // index.tsx
+import { GoogleGenAI, GenerateContentResponse } from "@google/genai";
 
-// Extend the global Window interface to include jsPDF
+// The API key provided by the user.
+const API_KEY = "26936b7e5c4421b39703b65dd558dc19b8587245";
+
+// Extend the global Window interface to include jsPDF and SpeechRecognition
 declare global {
     interface Window {
         jspdf: any; // For jsPDF library
+        SpeechRecognition: any;
+        webkitSpeechRecognition: any;
     }
 }
 
@@ -15,7 +21,7 @@ interface CheckboxOption {
 interface FormField {
     label: string;
     id: string;
-    type: 'text' | 'number' | 'select' | 'checkbox-group' | 'radio-group' | 'textarea' | 'file';
+    type: 'text' | 'number' | 'select' | 'checkbox-group' | 'radio-group' | 'textarea' | 'file' | 'date';
     placeholder?: string;
     options?: { value: string; text: string }[];
     checkboxOptions?: CheckboxOption[]; // Used for checkbox-group and radio-group
@@ -27,10 +33,287 @@ interface FormField {
     containerId?: string; // Optional ID for the field's container div
 }
 
+interface FileWithComment {
+    name: string;
+    comment: string;
+    dataUrl: string; // Base64 encoded data URL
+    type: string;    // MIME type
+}
+
 interface FormSectionData {
     title: string;
     id: string;
     fields: FormField[];
+}
+
+// List of field IDs that should have voice-to-text enabled
+const voiceEnabledFieldIds = [
+    'crossing-description', 'weather-conditions', 'vegetation-growth', 'scour-erosion',
+    'proximity-water', 'debris-accumulation', 'other-support-specify',
+    'support-condition-thermal-stress-comments', 'pipe-movement-at-supports-comments',
+    'sliding-roller-functionality-comments', 'support-comments', 'other-expansion-specify',
+    'expansion-feature-functionality-comments', 'expansion-comments', 'other-coating-type-specify',
+    'coating-comments', 'cp-comments', 'pipe-physical-damage', 'atmospheric-corrosion-details',
+    'clearance-comments', 'safety-hazards', 'access-structures-condition',
+    'access-safety-comments', 'photographs-taken', 'other-utilities-bridge',
+    'bridge-structure-condition', 'third-party-damage-potential', 'third-party-comments',
+    'immediate-hazards', 'actions-taken-hazards', 'recommendations-summary',
+    'final-summary-evaluation'
+];
+
+
+// --- Central data store for all file inputs ---
+const fileDataStore: { [inputId: string]: FileWithComment[] } = {};
+
+// --- Helper to read a file as a Base64 Data URL ---
+const readFileAsDataURL = (file: File): Promise<string> => {
+    return new Promise((resolve, reject) => {
+        const reader = new FileReader();
+        reader.onload = () => resolve(reader.result as string);
+        reader.onerror = (error) => reject(error);
+        reader.readAsDataURL(file);
+    });
+};
+
+// --- Helper to render the file list for a given input ---
+function renderFileList(inputId: string) {
+    const container = document.getElementById(`${inputId}-list-container`);
+    if (!container) return;
+    
+    container.innerHTML = '';
+    const files = fileDataStore[inputId];
+
+    if (files && files.length > 0) {
+        const list = document.createElement('ul');
+        list.classList.add('file-comment-list');
+
+        files.forEach((fileInfo, index) => {
+            const listItem = document.createElement('li');
+            listItem.classList.add('file-comment-item');
+
+            const filePreviewContainer = document.createElement('div');
+            filePreviewContainer.classList.add('file-preview-container');
+
+            const previewSrc = fileInfo.dataUrl;
+            
+            // Updated logic to handle renderable vs non-renderable images
+            if (fileInfo.type.startsWith('image/') && fileInfo.type !== 'image/tiff') {
+                const img = document.createElement('img');
+                img.src = previewSrc;
+                img.classList.add('file-thumbnail');
+                img.alt = `Thumbnail for ${fileInfo.name}`;
+                filePreviewContainer.appendChild(img);
+            } else if (fileInfo.type.startsWith('image/')) { // Handles TIFF and other image types without direct browser preview support
+                filePreviewContainer.classList.add('placeholder');
+                filePreviewContainer.innerHTML = '<span>🖼️</span>'; // Picture/frame emoji
+                filePreviewContainer.title = 'Image file (preview not supported for this format)';
+            } else { // Handles non-image files
+                filePreviewContainer.classList.add('placeholder');
+                filePreviewContainer.innerHTML = '<span>📄</span>'; // Document emoji
+                filePreviewContainer.title = `Document file: ${fileInfo.type}`;
+            }
+
+            const fileInfoContainer = document.createElement('div');
+            fileInfoContainer.classList.add('file-info-container');
+            
+            const fileNameEl = document.createElement('div');
+            fileNameEl.classList.add('file-name');
+            fileNameEl.textContent = fileInfo.name;
+            
+            const commentInput = document.createElement('input');
+            commentInput.type = 'text';
+            commentInput.classList.add('file-comment-input');
+            commentInput.placeholder = 'Add a comment...';
+            commentInput.setAttribute('data-file-name', fileInfo.name);
+            commentInput.value = fileInfo.comment;
+            commentInput.addEventListener('change', (e) => {
+                const newComment = (e.target as HTMLInputElement).value;
+                if (fileDataStore[inputId] && fileDataStore[inputId][index]) {
+                    fileDataStore[inputId][index].comment = newComment;
+                }
+            });
+
+            fileInfoContainer.appendChild(fileNameEl);
+            fileInfoContainer.appendChild(commentInput);
+            listItem.appendChild(filePreviewContainer);
+            listItem.appendChild(fileInfoContainer);
+            list.appendChild(listItem);
+        });
+        container.appendChild(list);
+    } else {
+        container.innerHTML = `<p class="no-files-message">No files selected.</p>`;
+    }
+}
+
+// --- Helper to auto-resize textareas ---
+function autoResizeTextarea(textarea: HTMLTextAreaElement) {
+    textarea.style.height = 'auto'; // Reset height to recalculate
+    textarea.style.height = `${textarea.scrollHeight}px`;
+}
+
+// --- Helper to add text improvement button ---
+function addImproveButton(wrapper: HTMLElement, inputElement: HTMLTextAreaElement) {
+    const improveButton = document.createElement('button');
+    improveButton.type = 'button';
+    improveButton.classList.add('improve-button');
+    improveButton.textContent = 'Improve';
+    improveButton.setAttribute('aria-label', `Improve text for ${inputElement.id}`);
+
+    improveButton.addEventListener('click', async () => {
+        const originalText = inputElement.value.trim();
+        if (!originalText) {
+            alert("There is no text to improve.");
+            return;
+        }
+
+        improveButton.disabled = true;
+        improveButton.textContent = 'Working...';
+        
+        // Remove any old suggestions
+        const oldSuggestions = wrapper.querySelector('.suggestions-container');
+        if (oldSuggestions) {
+            oldSuggestions.remove();
+        }
+        
+        try {
+            const ai = new GoogleGenAI({apiKey: API_KEY});
+
+            const prompt = `Rewrite the following text for a professional engineering field report. Provide 3 distinct alternative versions in a JSON array format, like ["suggestion 1", "suggestion 2", "suggestion 3"]. Improve clarity, grammar, and sentence structure, but preserve all original facts and the core meaning. Do not add any new information. Original text: "${originalText}"`;
+            
+            const response: GenerateContentResponse = await ai.models.generateContent({
+                model: 'gemini-2.5-flash-preview-04-17',
+                contents: prompt,
+                config: {
+                    responseMimeType: "application/json",
+                }
+            });
+            
+            let suggestions: string[] = [];
+            let jsonStr = response.text.trim();
+            const fenceRegex = /^```(\w*)?\s*\n?(.*?)\n?\s*```$/s;
+            const match = jsonStr.match(fenceRegex);
+            if (match && match[2]) {
+              jsonStr = match[2].trim();
+            }
+            
+            try {
+                const parsedData = JSON.parse(jsonStr);
+                if (Array.isArray(parsedData) && parsedData.every(item => typeof item === 'string')) {
+                    suggestions = parsedData;
+                } else {
+                    throw new Error("Parsed data is not an array of strings.");
+                }
+            } catch (e) {
+                console.error("Failed to parse JSON response, treating as single suggestion:", e);
+                suggestions = [response.text]; // Fallback to single suggestion
+            }
+
+            if (suggestions.length === 0) {
+                alert("Could not generate improvement suggestions.");
+                return;
+            }
+
+            // Create and display suggestions container
+            const suggestionsContainer = document.createElement('div');
+            suggestionsContainer.className = 'suggestions-container';
+
+            const header = document.createElement('div');
+            header.className = 'suggestions-header';
+            const title = document.createElement('span');
+            title.textContent = 'Suggestions';
+            const closeBtn = document.createElement('button');
+            closeBtn.innerHTML = '&times;';
+            closeBtn.className = 'suggestions-close-btn';
+            closeBtn.setAttribute('aria-label', 'Close suggestions');
+            closeBtn.onclick = () => suggestionsContainer.remove();
+            header.appendChild(title);
+            header.appendChild(closeBtn);
+            suggestionsContainer.appendChild(header);
+
+            suggestions.forEach(suggestionText => {
+                const item = document.createElement('div');
+                item.className = 'suggestion-item';
+                item.textContent = suggestionText;
+                item.tabIndex = 0; // Make it focusable
+                const selectSuggestion = () => {
+                    inputElement.value = suggestionText;
+                    autoResizeTextarea(inputElement);
+                    suggestionsContainer.remove();
+                };
+                item.onclick = selectSuggestion;
+                item.onkeydown = (e) => {
+                    if (e.key === 'Enter' || e.key === ' ') {
+                        selectSuggestion();
+                    }
+                };
+                suggestionsContainer.appendChild(item);
+            });
+
+            wrapper.appendChild(suggestionsContainer);
+
+        } catch (error) {
+            console.error("Error improving text:", error);
+            alert("Could not retrieve suggestions. Please check the console for more details.");
+        } finally {
+            improveButton.disabled = false;
+            improveButton.textContent = 'Improve';
+        }
+    });
+
+    wrapper.appendChild(improveButton);
+}
+
+
+// --- Helper to add voice-to-text microphone button ---
+function addMicrophoneButton(wrapper: HTMLElement, inputElement: HTMLTextAreaElement) {
+    const SpeechRecognition = window.SpeechRecognition || window.webkitSpeechRecognition;
+    if (!SpeechRecognition) {
+        console.warn("Speech Recognition API not supported in this browser.");
+        return;
+    }
+
+    const micButton = document.createElement('button');
+    micButton.type = 'button';
+    micButton.classList.add('mic-button');
+    micButton.innerHTML = '&#127908;'; // Microphone emoji
+    micButton.setAttribute('aria-label', `Start voice input for ${inputElement.id}`);
+
+    micButton.addEventListener('click', () => {
+        const recognition = new SpeechRecognition();
+        recognition.continuous = false;
+        recognition.interimResults = true;
+        recognition.lang = 'en-US';
+
+        micButton.classList.add('listening');
+
+        recognition.onend = () => {
+            micButton.classList.remove('listening');
+        };
+
+        recognition.onerror = (event: any) => {
+            console.error('Speech recognition error:', event.error);
+            micButton.classList.remove('listening');
+        };
+        
+        let finalTranscript = inputElement.value ? inputElement.value.trim() + ' ' : '';
+
+        recognition.onresult = (event: any) => {
+            let interimTranscript = '';
+            for (let i = event.resultIndex; i < event.results.length; ++i) {
+                if (event.results[i].isFinal) {
+                    finalTranscript += event.results[i][0].transcript.trim() + '. ';
+                } else {
+                    interimTranscript += event.results[i][0].transcript;
+                }
+            }
+            inputElement.value = finalTranscript + interimTranscript;
+            autoResizeTextarea(inputElement);
+        };
+
+        recognition.start();
+    });
+
+    wrapper.appendChild(micButton);
 }
 
 
@@ -106,17 +389,44 @@ function createFieldElement(field: FormField): HTMLElement {
             });
         }
         fieldContainer.appendChild(fieldset);
-    } else if (field.type === 'textarea' || field.type === 'text') {
-        const inputElement = field.type === 'textarea' ? document.createElement('textarea') : document.createElement('input');
-        if (field.type === 'text') {
-            (inputElement as HTMLInputElement).type = 'text';
-        }
+    } else if (field.type === 'textarea') {
+        const inputWrapper = document.createElement('div');
+        inputWrapper.classList.add('input-with-mic-wrapper');
+        
+        const inputElement = document.createElement('textarea');
         inputElement.id = field.id;
         inputElement.name = field.id;
         if (field.placeholder) inputElement.placeholder = field.placeholder;
         if (field.required) inputElement.required = true;
+        inputElement.spellcheck = true;
+
+        inputElement.addEventListener('input', () => autoResizeTextarea(inputElement));
+        
+        inputWrapper.appendChild(inputElement);
+
+        if (voiceEnabledFieldIds.includes(field.id)) {
+            addImproveButton(inputWrapper, inputElement);
+            addMicrophoneButton(inputWrapper, inputElement);
+        }
+
+        fieldContainer.appendChild(inputWrapper);
+
+    } else if (field.type === 'text' || field.type === 'date') {
+        const inputElement = document.createElement('input');
+        inputElement.type = field.type;
+        inputElement.id = field.id;
+        inputElement.name = field.id;
+        if (field.placeholder) inputElement.placeholder = field.placeholder;
+        if (field.required) inputElement.required = true;
+        
+        if(field.type === 'text') {
+            inputElement.spellcheck = true; // Enable native spell check
+        }
         fieldContainer.appendChild(inputElement);
     } else if (field.type === 'file') {
+        // Initialize the data store for this file input
+        fileDataStore[field.id] = [];
+
         const input = document.createElement('input');
         input.type = 'file';
         input.id = field.id;
@@ -125,41 +435,78 @@ function createFieldElement(field: FormField): HTMLElement {
         if (field.accept) input.accept = field.accept;
         fieldContainer.appendChild(input);
 
-        const fileListDisplay = document.createElement('div');
-        fileListDisplay.id = `${field.id}-list-display`;
-        fileListDisplay.classList.add('file-list-display');
-        fileListDisplay.textContent = 'No files selected.';
-        fieldContainer.appendChild(fileListDisplay);
-
-        input.addEventListener('change', (event) => {
-            fileListDisplay.innerHTML = '';
-            const files = (event.target as HTMLInputElement).files;
-            if (files && files.length > 0) {
-                const list = document.createElement('ul');
-                list.classList.add('file-list');
-                for (let i = 0; i < files.length; i++) {
-                    const listItem = document.createElement('li');
-                    listItem.textContent = files[i].name;
-                    list.appendChild(listItem);
-                }
-                fileListDisplay.appendChild(list);
-            } else {
-                fileListDisplay.textContent = 'No files selected.';
+        const fileListContainer = document.createElement('div');
+        fileListContainer.id = `${field.id}-list-container`;
+        fileListContainer.classList.add('file-list-container');
+        fieldContainer.appendChild(fileListContainer);
+        
+        input.addEventListener('change', async (event) => {
+            const selectedFiles = (event.target as HTMLInputElement).files;
+            if (!selectedFiles || selectedFiles.length === 0) {
+                fileDataStore[field.id] = [];
+                renderFileList(field.id);
+                return;
             }
+
+            // You can add a loading indicator here if needed
+            const newFiles: FileWithComment[] = [];
+            for (let i = 0; i < selectedFiles.length; i++) {
+                const file = selectedFiles[i];
+                try {
+                    const dataUrl = await readFileAsDataURL(file);
+                    newFiles.push({
+                        name: file.name,
+                        comment: '', // New files have empty comments by default
+                        dataUrl: dataUrl,
+                        type: file.type || 'application/octet-stream'
+                    });
+                } catch (error) {
+                    console.error(`Error reading file ${file.name}:`, error);
+                    alert(`Could not process the file: ${file.name}`);
+                }
+            }
+
+            // Replace the existing files in the store with the new selection
+            fileDataStore[field.id] = newFiles;
+            renderFileList(field.id);
         });
+
+        renderFileList(field.id); // Initial render (will show "No files selected")
     } else if (field.type === 'number') {
+        // For number fields with assessment options, the label is handled differently (in the radiogroup's aria-label)
+        // so we only add it here if there are NO assessment options.
         if (!field.assessmentOptions) {
              fieldContainer.insertBefore(labelElement, fieldContainer.firstChild); 
+        } else {
+             // For a better layout, we create a wrapper for the label and input
+            const numberInputContainer = document.createElement('div');
+            numberInputContainer.classList.add('number-input-container');
+            labelElement.classList.add('number-input-label'); // Add a class for specific styling
+            numberInputContainer.appendChild(labelElement);
+    
+            const input = document.createElement('input');
+            input.type = 'number';
+            input.id = field.id;
+            input.name = field.id;
+            if (field.placeholder) input.placeholder = field.placeholder;
+            if (field.required) input.required = true;
+            input.step = 'any'; 
+            
+            numberInputContainer.appendChild(input);
+            fieldContainer.appendChild(numberInputContainer);
+        }
+        
+        if (!field.assessmentOptions) {
+            const input = document.createElement('input');
+            input.type = 'number';
+            input.id = field.id;
+            input.name = field.id;
+            if (field.placeholder) input.placeholder = field.placeholder;
+            if (field.required) input.required = true;
+            input.step = 'any'; 
+            fieldContainer.appendChild(input);
         }
 
-        const input = document.createElement('input');
-        input.type = 'number';
-        input.id = field.id;
-        input.name = field.id;
-        if (field.placeholder) input.placeholder = field.placeholder;
-        if (field.required) input.required = true;
-        input.step = 'any'; 
-        fieldContainer.appendChild(input);
 
         if (field.assessmentOptions && field.assessmentOptions.length > 0) {
             const assessmentGroup = document.createElement('div');
@@ -179,6 +526,11 @@ function createFieldElement(field: FormField): HTMLElement {
                 radio.name = `${field.id}-assessment-type`; 
                 radio.value = optText;
                 
+                // Set default to blank by not having a checked radio button initially
+                if (field.defaultValue && field.defaultValue === optText) {
+                    radio.checked = true;
+                }
+
                 const radioLabel = document.createElement('label');
                 radioLabel.htmlFor = radioId;
                 radioLabel.textContent = optText;
@@ -349,13 +701,26 @@ const rawFgAndESystemsData: RawSystemEntry[] = [
 ];
 const fgAndESystems: ProcessedSystemEntry[] = processRawSystemData(rawFgAndESystemsData, "FG&E");
 
+// Bangor Natural Gas Data
+const rawBngSystemsData: RawSystemEntry[] = [
+  { ds: 'BNG', name: 'Bangor Steel', maopStr: '500 PSIG' },
+  { ds: 'BNG', name: 'Lincoln', maopStr: '60 PSIG' },
+  { ds: 'BNG', name: 'Bangor IP', maopStr: '60 PSIG' },
+  { ds: 'BNG', name: 'Brewer', maopStr: '60 PSIG' },
+  { ds: 'BNG', name: 'Searsport', maopStr: '60 PSIG' },
+  { ds: 'BNG', name: 'Orrington', maopStr: '720 PSIG' },
+  { ds: 'BNG', name: 'Bucksport', maopStr: '60 PSIG' },
+];
+const bngSystems: ProcessedSystemEntry[] = processRawSystemData(rawBngSystemsData, "Bangor Natural Gas");
+
+
 // --- Define all form sections and fields globally ---
 const allFormSections: FormSectionData[] = [
     {
         title: 'General Site & Crossing Information',
         id: 'section-general-info',
         fields: [
-            { label: 'Date of Assessment:', id: 'assessment-date', type: 'text', placeholder: 'YYYY-MM-DD', required: true },
+            { label: 'Date of Assessment:', id: 'assessment-date', type: 'date', required: true },
             { label: 'Assessment By:', id: 'assessor-name', type: 'text', placeholder: 'Enter name(s) of assessor(s)', required: true },
             {
                 label: 'District Operating Center (DOC):', id: 'doc-center', type: 'select', required: true,
@@ -366,14 +731,40 @@ const allFormSections: FormSectionData[] = [
                     { value: 'gsgt', text: 'GSGT' }, { value: 'unh_eco', text: 'UNH-ECO-Line' },
                 ]
             },
-            { label: 'Description of Crossing/Work Location:', id: 'crossing-description', type: 'textarea', placeholder: 'Provide a brief description of the specific location, access points, or any immediate observations about the work area.' },
             { label: 'Crossing Identification Number:', id: 'crossing-id', type: 'text', placeholder: 'e.g., ME-RIV-001', required: true },
-            { label: 'Bridge Name:', id: 'bridge-name', type: 'text', placeholder: 'e.g., Main Street Bridge' },
-            { label: 'Bridge Number:', id: 'bridge-number', type: 'text', placeholder: 'e.g., B78-002' },
-            { label: 'Road Name:', id: 'road-name', type: 'text', placeholder: 'e.g., Main Street' },
-            { label: 'Feature Crossed:', id: 'feature-crossed', type: 'text', placeholder: 'e.g., Saco River, I-95' },
+            { label: 'Description of Crossing/Work Location:', id: 'crossing-description', type: 'textarea', placeholder: 'Provide a brief description of the specific location, access points, or any immediate observations about the work area.' },
             { label: 'GPS Latitude:', id: 'gps-lat', type: 'text', placeholder: 'e.g., 43.6591° N' },
             { label: 'GPS Longitude:', id: 'gps-lon', type: 'text', placeholder: 'e.g., 70.2568° W' },
+        ]
+    },
+    {
+        title: 'Bridge & Environmental Context',
+        id: 'section-bridge-environmental',
+        fields: [
+            { label: 'Road Name:', id: 'road-name', type: 'text', placeholder: 'e.g., Main Street' },
+            { label: 'Feature Crossed:', id: 'feature-crossed', type: 'text', placeholder: 'e.g., Saco River, I-95' },
+            { label: 'Bridge Name:', id: 'bridge-name', type: 'text', placeholder: 'e.g., Main Street Bridge' },
+            { label: 'Bridge Number:', id: 'bridge-number', type: 'text', placeholder: 'e.g., B78-002' },
+            {
+                label: 'Bridge Type:', id: 'bridge-type', type: 'select', options: [
+                    { value: '', text: 'Select Bridge Type...' }, { value: 'girder', text: 'Girder (Steel or Concrete)' },
+                    { value: 'truss', text: 'Truss' }, { value: 'arch', text: 'Arch' },
+                    { value: 'suspension', text: 'Suspension' }, { value: 'culvert', text: 'Culvert' }, { value: 'other', text: 'Other' }
+                ]
+            },
+            {
+                label: 'Bridge Material:', id: 'bridge-material', type: 'select', options: [
+                    { value: '', text: 'Select Bridge Material...' }, { value: 'steel', text: 'Steel' },
+                    { value: 'concrete', text: 'Concrete (Reinforced or Prestressed)' }, { value: 'wood', text: 'Wood' },
+                    { value: 'composite', text: 'Composite (Steel & Concrete)' }, { value: 'masonry', text: 'Masonry' }, { value: 'other', text: 'Other' }
+                ]
+            },
+            { label: 'Ambient Temperature at time of inspection (°F):', id: 'ambient-temp', type: 'number', placeholder: 'e.g., 65' },
+            { label: 'General Weather Conditions:', id: 'weather-conditions', type: 'textarea', placeholder: 'e.g., Sunny and clear, Overcast, Light rain' },
+            { label: 'Vegetation Growth Around Pipeline/Supports:', id: 'vegetation-growth', type: 'textarea', placeholder: 'Describe vegetation, e.g., None, Minor, Overgrown, Trees/Roots impacting.' },
+            { label: 'Evidence of Scour or Erosion Near Supports/Pipeline:', id: 'scour-erosion', type: 'textarea', placeholder: 'Describe any scour or erosion observed.' },
+            { label: 'Proximity to Water Body/Wetlands:', id: 'proximity-water', type: 'textarea', placeholder: 'Describe proximity and potential impact.' },
+            { label: 'Signs of Debris Accumulation Around Pipeline/Supports:', id: 'debris-accumulation', type: 'textarea', placeholder: 'Describe any debris build-up.' },
         ]
     },
     {
@@ -396,6 +787,24 @@ const allFormSections: FormSectionData[] = [
                 ]
             },
             { label: 'Other Pipeline Diameter (Specify):', id: 'pipeline-diameter-other', type: 'text', placeholder: 'Specify other diameter' },
+            {
+                label: 'Pipe Wall Thickness (Inches):',
+                id: 'pipe-wall-thickness',
+                type: 'number',
+                placeholder: 'e.g., 0.280',
+                assessmentOptions: ["Measured", "Stamped on Pipe", "Obtained from records"]
+            },
+            {
+                label: 'Installation Temperature (In Deg F.):',
+                id: 'installation-temp',
+                type: 'number',
+                placeholder: 'e.g., 55',
+                assessmentOptions: ["Assumed", "Documented in Original Installation Records", "Derived from historical temperatures based on installation date"]
+            },
+            {
+                label: 'System (Bangor Natural Gas):', id: 'bng-system-select', containerId: 'bng-system-select-container',
+                type: 'select', options: [{ value: '', text: 'Select System for Bangor Natural Gas...' }],
+            },
             {
                 label: 'System (NU Maine):', id: 'nu-me-system-select', containerId: 'nu-me-system-select-container',
                 type: 'select', options: [{ value: '', text: 'Select System for NU Maine...' }],
@@ -432,7 +841,7 @@ const allFormSections: FormSectionData[] = [
                     { value: 'other_support', text: 'Other' }
                 ]
             },
-            { label: 'Specify Other Support Method:', id: 'other-support-specify', type: 'text', placeholder: 'Describe other support method' },
+            { label: 'Specify Other Support Method:', id: 'other-support-specify', type: 'textarea', placeholder: 'Describe other support method' },
             {
                 label: 'Observed Condition of Supports/Anchors in Relation to Thermal Stress:', id: 'support-condition-thermal-stress', type: 'select',
                 options: [
@@ -477,7 +886,7 @@ const allFormSections: FormSectionData[] = [
                     { value: 'other_expansion', text: 'Other' }
                 ]
             },
-            { label: 'Specify Other Expansion Feature:', id: 'other-expansion-specify', type: 'text', placeholder: 'Describe other expansion feature' },
+            { label: 'Specify Other Expansion Feature:', id: 'other-expansion-specify', type: 'textarea', placeholder: 'Describe other expansion feature' },
             {
                 label: 'Observed Functionality of Expansion Joints/Loops (if present):', id: 'expansion-feature-functionality', type: 'select',
                 options: [
@@ -512,7 +921,7 @@ const allFormSections: FormSectionData[] = [
                 ],
                 defaultValue: '' 
             },
-            { label: 'Specify Other Coating Type:', id: 'other-coating-type-specify', type: 'text', placeholder: 'Describe other coating type' },
+            { label: 'Specify Other Coating Type:', id: 'other-coating-type-specify', type: 'textarea', placeholder: 'Describe other coating type' },
             {
                 label: 'Visible Coating Condition:', id: 'coating-condition', type: 'select',
                 options: [
@@ -523,10 +932,11 @@ const allFormSections: FormSectionData[] = [
             },
             { label: 'Comments on Coating:', id: 'coating-comments', type: 'textarea', placeholder: 'Specific observations about pipeline coating.' },
             {
-                label: 'Monolithic Insulator(s) Present?', id: 'monolithic-insulator-present', type: 'select', defaultValue: 'no',
-                options: [{ value: 'no', text: 'No' }, { value: 'yes', text: 'Yes' }]
+                label: 'Test Station Found and Accessible?', id: 'test-station-accessible', type: 'select',
+                options: [ { value: '', text: 'Select...' }, { value: 'yes', text: 'Yes' }, { value: 'no', text: 'No' }, { value: 'na', text: 'Not Applicable' }]
             },
-            { label: 'Details on Monolithic Insulator(s):', id: 'monolithic-insulator-details', type: 'textarea', placeholder: 'e.g., Location, type, condition, test station readings.' },
+            { label: 'Pipe-to-Soil Potential Reading (mV):', id: 'pipe-to-soil-potential', type: 'number', placeholder: 'e.g., -950' },
+            { label: 'Comments on Cathodic Protection:', id: 'cp-comments', type: 'textarea', placeholder: 'e.g., Location, type, condition of test station. Insulator condition.' },
             { label: 'Evidence of Physical Damage to Pipe (dents, gouges, etc.):', id: 'pipe-physical-damage', type: 'textarea', placeholder: 'Describe any physical damage observed.' },
             { label: 'Atmospheric Corrosion: Extent and Severity (if steel pipe exposed):', id: 'atmospheric-corrosion-details', type: 'textarea', placeholder: 'Describe atmospheric corrosion details.' }
         ]
@@ -540,17 +950,6 @@ const allFormSections: FormSectionData[] = [
             { label: 'Horizontal Clearance - Pipe to Bridge Abutment/Pier (ft):', id: 'clearance-horizontal-abutment', type: 'number', placeholder: 'e.g., 1.0', assessmentOptions: ["Measured", "Estimated", "Could not Assess"] },
             { label: 'Horizontal Clearance - Pipe to other Utilities/Structures (ft):', id: 'clearance-horizontal-other', type: 'number', placeholder: 'e.g., 3.0', assessmentOptions: ["Measured", "Estimated", "Could not Assess"] },
             { label: 'Comments on Clearances and Measurements:', id: 'clearance-comments', type: 'textarea', placeholder: 'Any specific observations or concerns about clearances.' }
-        ]
-    },
-    {
-        title: 'Environmental Considerations',
-        id: 'section-environmental',
-        fields: [
-            { label: 'Vegetation Growth Around Pipeline/Supports:', id: 'vegetation-growth', type: 'textarea', placeholder: 'Describe vegetation, e.g., None, Minor, Overgrown, Trees/Roots impacting.' },
-            { label: 'Evidence of Scour or Erosion Near Supports/Pipeline:', id: 'scour-erosion', type: 'textarea', placeholder: 'Describe any scour or erosion observed.' },
-            { label: 'Proximity to Water Body/Wetlands:', id: 'proximity-water', type: 'textarea', placeholder: 'Describe proximity and potential impact.' },
-            { label: 'Signs of Debris Accumulation Around Pipeline/Supports:', id: 'debris-accumulation', type: 'textarea', placeholder: 'Describe any debris build-up.' },
-            { label: 'Comments on Environmental Conditions:', id: 'environmental-comments', type: 'textarea', placeholder: 'Other environmental observations or concerns.' }
         ]
     },
     {
@@ -568,7 +967,8 @@ const allFormSections: FormSectionData[] = [
         id: 'section-photos',
         fields: [
             { label: 'Photographs Taken (list or describe):', id: 'photographs-taken', type: 'textarea', placeholder: 'e.g., Overall crossing, support details, coating damage, clearance issues.' },
-            { label: 'Upload Photographs/Sketches/Other Documents:', id: 'file-attachments', type: 'file', multiple: true, accept: 'image/*,.pdf,.doc,.docx,.txt' }
+            { label: 'Installation Records (Images Only):', id: 'installation-records', type: 'file', multiple: true, accept: 'image/jpeg,image/png,image/tiff' },
+            { label: 'Upload Photographs/Sketches:', id: 'file-attachments', type: 'file', multiple: true, accept: 'image/jpeg,image/png,image/tiff' }
         ]
     },
     {
@@ -609,6 +1009,14 @@ const allFormSections: FormSectionData[] = [
                     { value: 'address_access_safety', text: 'Address access/safety concern(s).' },
                     { value: 'consult_structural_engineer', text: 'Consult with bridge owner / structural engineer regarding bridge condition.' },
                     { value: 'other_recommendation', text: 'Other (Specify in summary)' }
+                ]
+            },
+             {
+                label: 'Recommendation Priority:', id: 'recommendation-priority', type: 'select', required: true,
+                options: [
+                    { value: '', text: 'Select Priority...' }, { value: 'immediate', text: 'Immediate (Within 7 days)' },
+                    { value: 'high', text: 'High (Within 30 days)' }, { value: 'medium', text: 'Medium (Within 90 days)' },
+                    { value: 'low', text: 'Low (Within 1 year)' }, { value: 'monitor', text: 'Monitor (Next scheduled inspection)' }
                 ]
             },
             { label: 'Summary of Recommendations / Specify "Other" / Timeline:', id: 'recommendations-summary', type: 'textarea', placeholder: 'Detail the recommended actions, specify if "Other" was selected, and provide timeline for actions.' },
@@ -677,6 +1085,8 @@ function populateProcessGuidelines() {
         <ul>
             <li>Identify and record the pipeline material (e.g., Steel Pipe, Steel Pipe in casing, Plastic pipe in casing).</li>
             <li>Select the nominal Pipeline Diameter. If "Other," specify the diameter in the provided text field.</li>
+            <li>Record the Pipe Wall Thickness and select the method used to determine it (e.g., Measured, from Records).</li>
+            <li>Enter the estimated or known Installation Temperature in degrees Fahrenheit and select how this value was determined (e.g., Assumed, from Records, from historical data).</li>
             <li>If the DOC selected has predefined systems (e.g., "Northern Utilities - Maine," "Northern Utilities - New Hampshire," "FG&E"), select the appropriate system from its specific dropdown. This will auto-populate the MAOP.</li>
             <li>For other DOCs, or if overriding, manually select the unit for Maximum Allowable Operating Pressure (MAOP) (PSIG or inches W.C.).</li>
             <li>For other DOCs, or if overriding, manually record the MAOP Value.</li>
@@ -758,6 +1168,7 @@ function populateProcessGuidelines() {
                 </ul>
             </li>
             <li>Utilize the file upload feature to attach relevant photographs, sketches, or other supporting documents. Ensure file names are descriptive if possible.</li>
+            <li>For each file uploaded, add a concise, descriptive comment in the provided text box.</li>
         </ul>
 
         <h4>Section 10: Third-Party Infrastructure & Proximity</h4>
@@ -839,9 +1250,8 @@ function collectFormData(): Record<string, any> {
     const elements = form.elements;
     for (let i = 0; i < elements.length; i++) {
         const element = elements[i] as HTMLInputElement | HTMLSelectElement | HTMLTextAreaElement;
-        if (!element.name && !element.id) continue; // Skip elements without name or id
-
         const key = element.id || element.name;
+        if (!key) continue; // Skip elements without name or id
 
         if (element.type === 'checkbox') {
             formData[key] = (element as HTMLInputElement).checked;
@@ -850,12 +1260,8 @@ function collectFormData(): Record<string, any> {
                 formData[element.name] = (element as HTMLInputElement).value;
             }
         } else if (element.type === 'file') {
-            const fileInput = element as HTMLInputElement;
-            if (fileInput.files && fileInput.files.length > 0) {
-                 formData[key + "_filenames"] = Array.from(fileInput.files).map(f => f.name);
-            } else {
-                 formData[key + "_filenames"] = [];
-            }
+            // Read directly from the central data store
+            formData[key] = fileDataStore[key] || [];
         } else if (element.tagName === 'SELECT') {
              formData[key] = (element as HTMLSelectElement).value;
         }
@@ -870,16 +1276,26 @@ function populateFormWithData(data: Record<string, any>) {
     const form = document.getElementById('assessment-form') as HTMLFormElement;
     if (!form) return;
     
-    form.reset(); 
-    const fileDisplays = form.querySelectorAll('.file-list-display');
-    fileDisplays.forEach(fd => fd.textContent = 'No files selected.');
+    // Reset form and clear file store before populating
+    form.reset();
+    Object.keys(fileDataStore).forEach(key => {
+        fileDataStore[key] = [];
+        renderFileList(key);
+    });
 
     Object.keys(data).forEach(key => {
-        if (key.endsWith("_filenames")) return; 
-
         const element = document.getElementById(key) as HTMLInputElement | HTMLSelectElement | HTMLTextAreaElement;
         if (element) {
-            if (element.type === 'checkbox') {
+            if (element.type === 'file') {
+                const fileData = data[key] as FileWithComment[];
+                if (Array.isArray(fileData)) {
+                    // Populate the store and render the list
+                    fileDataStore[key] = fileData;
+                    renderFileList(key);
+                }
+                // Clear the actual file input element's value
+                element.value = '';
+            } else if (element.type === 'checkbox') {
                 (element as HTMLInputElement).checked = data[key];
             } else if (element.tagName === 'SELECT') {
                  (element as HTMLSelectElement).value = data[key];
@@ -888,7 +1304,9 @@ function populateFormWithData(data: Record<string, any>) {
                      // Now handle the dependent system selects
                      const selectedDocValue = data['doc-center'];
                      let systemSelectId: string | null = null;
-                     if (selectedDocValue === 'nu_me' && data['nu-me-system-select']) {
+                     if (selectedDocValue === 'bng' && data['bng-system-select']) {
+                         systemSelectId = 'bng-system-select';
+                     } else if (selectedDocValue === 'nu_me' && data['nu-me-system-select']) {
                          systemSelectId = 'nu-me-system-select';
                      } else if (selectedDocValue === 'nu_nh' && data['nu-nh-system-select']) {
                          systemSelectId = 'nu-nh-system-select';
@@ -908,7 +1326,7 @@ function populateFormWithData(data: Record<string, any>) {
                         }, 0); // Small delay to ensure dropdown is populated.
                      }
                  }
-            } else if (element.type !== 'radio' && element.type !== 'file') { 
+            } else if (element.type !== 'radio') { 
                 element.value = data[key];
             }
         } else {
@@ -924,28 +1342,12 @@ function populateFormWithData(data: Record<string, any>) {
             }
         }
     });
-    Object.keys(data).forEach(key => {
-        if (key.endsWith("_filenames")) {
-            const originalId = key.replace("_filenames", "");
-            const fileListDisplay = document.getElementById(`${originalId}-list-display`);
-            if (fileListDisplay && Array.isArray(data[key]) && data[key].length > 0) {
-                fileListDisplay.innerHTML = '';
-                const list = document.createElement('ul');
-                list.classList.add('file-list');
-                (data[key] as string[]).forEach(filename => {
-                    const listItem = document.createElement('li');
-                    listItem.textContent = `${filename} (saved - re-select if needed)`;
-                    list.appendChild(listItem);
-                });
-                fileListDisplay.appendChild(list);
-                const fileInput = document.getElementById(originalId) as HTMLInputElement;
-                if(fileInput) fileInput.value = '';
-
-            } else if (fileListDisplay) {
-                fileListDisplay.textContent = 'No files selected (or not saved).';
-            }
-        }
+    
+    // Auto-resize all textareas after populating them
+    document.querySelectorAll('textarea').forEach(textarea => {
+        autoResizeTextarea(textarea);
     });
+
     alert('Assessment data loaded successfully!');
 }
 
@@ -980,6 +1382,12 @@ function setupDocDependentFields() {
     const maopUnitSelect = document.getElementById('maop-unit') as HTMLSelectElement;
 
     const systemSelects = {
+        'bng': {
+            container: document.getElementById('bng-system-select-container'),
+            select: document.getElementById('bng-system-select') as HTMLSelectElement,
+            data: bngSystems,
+            placeholder: 'Select System for Bangor Natural Gas...'
+        },
         'nu_me': {
             container: document.getElementById('nu-me-system-select-container'),
             select: document.getElementById('nu-me-system-select') as HTMLSelectElement,
@@ -1001,6 +1409,7 @@ function setupDocDependentFields() {
     };
 
     if (!docCenterSelect || !maopValueInput || !maopUnitSelect ||
+        !systemSelects.bng.container || !systemSelects.bng.select ||
         !systemSelects.nu_me.container || !systemSelects.nu_me.select ||
         !systemSelects.nu_nh.container || !systemSelects.nu_nh.select ||
         !systemSelects.fge.container || !systemSelects.fge.select) {
@@ -1065,6 +1474,7 @@ function setupDocDependentFields() {
     };
 
     docCenterSelect.addEventListener('change', handleDocChange);
+    systemSelects.bng.select.addEventListener('change', createSystemSelectChangeHandler(systemSelects.bng));
     systemSelects.nu_me.select.addEventListener('change', createSystemSelectChangeHandler(systemSelects.nu_me));
     systemSelects.nu_nh.select.addEventListener('change', createSystemSelectChangeHandler(systemSelects.nu_nh));
     systemSelects.fge.select.addEventListener('change', createSystemSelectChangeHandler(systemSelects.fge));
@@ -1101,13 +1511,22 @@ function collectReportData(): ReportFieldDetail[] {
 
             if (element) {
                 switch (field.type) {
+                    case 'date': {
+                        const rawDate = element.value; // YYYY-MM-DD
+                        if (rawDate) {
+                            const [year, month, day] = rawDate.split('-');
+                            displayValue = `${month}/${day}/${year}`;
+                        }
+                        break;
+                    }
                     case 'select':
                         displayValue = getSelectedOptionText(field.id);
                         if (field.id === 'doc-center' && (element as HTMLSelectElement).value) {
                              // Also capture specific system if selected
                             const docVal = (element as HTMLSelectElement).value;
                             let systemSelectId: string | null = null;
-                            if (docVal === 'nu_me') systemSelectId = 'nu-me-system-select';
+                            if (docVal === 'bng') systemSelectId = 'bng-system-select';
+                            else if (docVal === 'nu_me') systemSelectId = 'nu-me-system-select';
                             else if (docVal === 'nu_nh') systemSelectId = 'nu-nh-system-select';
                             else if (docVal === 'fge') systemSelectId = 'fge-system-select';
 
@@ -1147,16 +1566,11 @@ function collectReportData(): ReportFieldDetail[] {
                         break;
                     }
                     case 'file': {
-                        const fileInput = element as HTMLInputElement;
-                        if (fileInput.files && fileInput.files.length > 0) {
-                            displayValue = Array.from(fileInput.files).map(f => f.name).join(', ');
+                        const files = fileDataStore[field.id] || [];
+                        if (files.length > 0) {
+                            displayValue = "See attached photographs in report.";
                         } else {
-                             const listDisplay = document.getElementById(`${field.id}-list-display`);
-                             if (listDisplay && listDisplay.textContent !== 'No files selected.' && listDisplay.querySelector('ul li')) {
-                                displayValue = listDisplay.textContent || 'Previously saved files (re-select if needed)';
-                             } else {
-                                displayValue = 'No files selected';
-                             }
+                            displayValue = "No files attached.";
                         }
                         break;
                     }
@@ -1167,7 +1581,7 @@ function collectReportData(): ReportFieldDetail[] {
                             const checkedAssessmentRadio = document.querySelector(`input[name="${assessmentRadioName}"]:checked`) as HTMLInputElement;
                             if (checkedAssessmentRadio) {
                                 displayValue += ` (${checkedAssessmentRadio.value})`;
-                            } else {
+                            } else if (element.value) { // Only show 'not selected' if a number is entered
                                 displayValue += ' (Assessment type not selected)';
                             }
                         }
@@ -1197,131 +1611,413 @@ function collectReportData(): ReportFieldDetail[] {
     return reportData;
 }
 
+async function buildPdfDocument(approvedExecSummary: string, approvedFinalSummary: string) {
+    const loadingOverlay = document.getElementById('loading-overlay');
+    const loadingText = document.getElementById('loading-text');
 
-function handleGenerateReport() {
-    const { jsPDF } = window.jspdf;
-    const doc = new jsPDF();
-    // Ensure jsPDF-AutoTable plugin is loaded
-    if (typeof doc.autoTable !== 'function') {
-        console.error("jsPDF-AutoTable plugin is not loaded correctly!");
-        alert("Error: PDF generation plugin (AutoTable) is missing. Cannot generate report.");
-        return;
+    if (loadingOverlay && loadingText) {
+        loadingText.textContent = 'Generating Report...';
+        loadingOverlay.style.display = 'flex';
     }
 
-    const reportItems = collectReportData();
-    const crossingId = getElementValue('crossing-id');
-    const assessmentDate = getElementValue('assessment-date');
-    const assessorName = getElementValue('assessor-name');
-    const finalSummaryEval = getElementValue('final-summary-evaluation');
-    const recommendationsSummary = getElementValue('recommendations-summary');
-    const recommendedActionRadio = document.querySelector('input[name="recommendation-actions"]:checked') as HTMLInputElement;
-    let recommendedActionText = "N/A";
-    if (recommendedActionRadio) {
-        const actionLabel = document.querySelector(`label[for="${recommendedActionRadio.id}"]`);
-        recommendedActionText = actionLabel?.textContent || recommendedActionRadio.value;
-    }
-
-
-    doc.setFontSize(18);
-    doc.text("Pipeline Bridge Crossing Assessment Report", 14, 20);
-
-    doc.setFontSize(12);
-    doc.text(`Crossing ID: ${crossingId}`, 14, 30);
-    doc.text(`Assessment Date: ${assessmentDate}`, 14, 36);
-    doc.text(`Assessed By: ${assessorName}`, 14, 42);
-
-    // --- Executive Summary ---
-    doc.setFontSize(16);
-    doc.text("Executive Summary", 14, 55);
-    doc.setFontSize(10);
-    let yPos = 62;
-    const execSummaryLines = [
-        `This report details the assessment of pipeline crossing ${crossingId}, conducted on ${assessmentDate} by ${assessorName}.`,
-        "Key Findings & Recommendations:",
-        `- Recommended Action: ${recommendedActionText}`,
-        `- Recommendation Details: ${recommendationsSummary || "No specific details provided."}`,
-        `Overall Evaluation Summary: ${finalSummaryEval || "No final summary provided."}`
-    ];
-    
-    // Add some key data points to executive summary
-    const externalCorrosion = reportItems.find(item => item.label === 'Visible External Corrosion:')?.value || "Not assessed";
-    const immediateHazards = getElementValue('immediate-hazards');
-
-    execSummaryLines.splice(2,0, `- Visible External Corrosion: ${externalCorrosion}`);
-    if (immediateHazards && immediateHazards !== 'N/A' && immediateHazards.trim() !== '') {
-         execSummaryLines.splice(3,0, `- Immediate Hazards Noted: ${immediateHazards}`);
-    }
-
-
-    execSummaryLines.forEach(line => {
-        const splitLines = doc.splitTextToSize(line, 180); // 180mm width
-        doc.text(splitLines, 14, yPos);
-        yPos += (splitLines.length * 6); // Adjust spacing based on number of lines
-    });
-    yPos += 5; // Extra space before detailed report
-
-    // --- Detailed Report ---
-    doc.setFontSize(16);
-    doc.text("Detailed Findings", 14, yPos);
-    yPos += 7;
-
-    doc.setFontSize(12);
-    doc.text("Overall Summary of Evaluation:", 14, yPos);
-    yPos += 6;
-    doc.setFontSize(10);
-    const finalSummaryLines = doc.splitTextToSize(finalSummaryEval || "No final summary provided.", 180);
-    doc.text(finalSummaryLines, 14, yPos);
-    yPos += (finalSummaryLines.length * 6) + 5;
-
-
-    const tableData = reportItems.map(item => [item.section, item.label, item.value]);
-
-    (doc as any).autoTable({
-        startY: yPos,
-        head: [['Section', 'Field Description', 'Value / Observation']],
-        body: tableData,
-        theme: 'striped',
-        headStyles: { fillColor: [0, 90, 156] }, // UNITIL Blue
-        didDrawPage: (data: any) => { // For page numbers
-            doc.setFontSize(10);
-            doc.text('Page ' + (doc.internal as any).getNumberOfPages(), data.settings.margin.left, doc.internal.pageSize.height - 10);
+    try {
+        const { jsPDF } = window.jspdf;
+        const doc = new jsPDF({ orientation: 'p', unit: 'mm', format: 'a4' });
+        if (typeof doc.autoTable !== 'function') {
+            console.error("jsPDF-AutoTable plugin is not loaded correctly!");
+            alert("Error: PDF generation plugin (AutoTable) is missing. Cannot generate report.");
+            if (loadingOverlay) loadingOverlay.style.display = 'none';
+            return;
         }
+        
+        // Update the form field in the UI with the approved text, so it's reflected in the table
+        const finalSummaryTextarea = document.getElementById('final-summary-evaluation') as HTMLTextAreaElement;
+        if (finalSummaryTextarea) {
+            finalSummaryTextarea.value = approvedFinalSummary;
+             autoResizeTextarea(finalSummaryTextarea);
+        }
+        
+        const reportItems = collectReportData();
+        const crossingId = getElementValue('crossing-id');
+        
+        const rawDate = getElementValue('assessment-date'); // YYYY-MM-DD
+        let assessmentDate = 'N/A';
+        if (rawDate) {
+            const [year, month, day] = rawDate.split('-');
+            assessmentDate = `${month}/${day}/${year}`;
+        }
+
+        const assessorName = getElementValue('assessor-name');
+        const immediateHazards = getElementValue('immediate-hazards');
+        
+        // --- File Processing ---
+        const allFilesWithComments = [
+            ...(fileDataStore['file-attachments'] || []),
+            ...(fileDataStore['installation-records'] || [])
+        ];
+
+        const imageFiles = allFilesWithComments.filter(item => item.type.startsWith('image/'));
+
+        const processedImages = await Promise.all(
+            imageFiles.map(async (item) => {
+                try {
+                    const img = new Image();
+                    await new Promise((resolve, reject) => {
+                        img.onload = resolve;
+                        img.onerror = reject;
+                        img.src = item.dataUrl;
+                    });
+                    return {
+                        name: item.name,
+                        comment: item.comment,
+                        dataUrl: item.dataUrl,
+                        width: img.width,
+                        height: img.height,
+                        type: item.type.replace('image/', '').toUpperCase()
+                    };
+                } catch (error) {
+                    console.error(`Error processing image ${item.name}:`, error);
+                    return null;
+                }
+            })
+        );
+        const validImages = processedImages.filter(img => img !== null) as NonNullable<typeof processedImages[0]>[];
+
+
+        // --- PDF Generation ---
+        const addHeaderFooter = () => {
+            const pageCount = (doc.internal as any).getNumberOfPages();
+            for (let i = 1; i <= pageCount; i++) {
+                doc.setPage(i);
+                doc.setFont('helvetica', 'normal'); // Explicitly set font style to prevent errors
+                doc.setFontSize(9);
+                doc.setTextColor(128);
+                doc.text(`Pipeline Crossing Assessment: ${crossingId}`, 15, 10);
+                doc.text(`Page ${i} of ${pageCount}`, doc.internal.pageSize.getWidth() - 15, doc.internal.pageSize.getHeight() - 10, { align: 'right' });
+            }
+        };
+
+        // --- Title Page ---
+        doc.setFontSize(22);
+        doc.setFont('helvetica', 'bold');
+        doc.text('Pipeline Bridge Crossing', 105, 60, { align: 'center' });
+        doc.text('Assessment Report', 105, 70, { align: 'center' });
+        doc.setFontSize(14);
+        doc.setFont('helvetica', 'normal');
+        doc.text(`Crossing ID: ${crossingId}`, 105, 90, { align: 'center' });
+        doc.text(`Assessment Date: ${assessmentDate}`, 105, 100, { align: 'center' });
+        doc.text(`Assessed By: ${assessorName}`, 105, 110, { align: 'center' });
+        
+        // --- Executive Summary Page ---
+        doc.addPage();
+        let yPos = 25;
+        doc.setFontSize(18);
+        doc.text("Executive Summary", 15, yPos);
+        yPos += 2;
+        doc.setLineWidth(0.5);
+        doc.line(15, yPos, 195, yPos);
+        yPos += 8;
+
+        const writeTextBlock = (title: string, content: string, titleOptions: any = {}, contentOptions: any = {}) => {
+            if (content && content !== 'N/A' && content.trim() !== '') {
+                doc.setFontSize(12);
+                doc.setFont('helvetica', 'bold');
+                doc.setTextColor(titleOptions.color || 0);
+                doc.text(title, 15, yPos);
+                yPos += 6;
+                doc.setFontSize(10);
+                doc.setFont('helvetica', 'normal');
+                doc.setTextColor(contentOptions.color || 0);
+                const splitText = doc.splitTextToSize(content, 180);
+                doc.text(splitText, 15, yPos);
+                yPos += (splitText.length * 5) + 5;
+                doc.setTextColor(0); // Reset color
+            }
+        };
+        
+        writeTextBlock('Executive Summary:', approvedExecSummary);
+        
+        if (immediateHazards && immediateHazards.trim() !== '' && immediateHazards !== 'N/A') {
+            writeTextBlock('IMMEDIATE HAZARDS IDENTIFIED:', immediateHazards, { color: [194, 25, 25] });
+        }
+        
+        // --- Detailed Data Table Page ---
+        const finalReportItems = collectReportData();
+        
+        doc.addPage();
+        const tableData = finalReportItems
+            .filter(item => {
+                if (item.label.startsWith('System (NU') || item.label.startsWith('System (FG&E') || item.label.startsWith('System (Bangor Natural Gas)')) {
+                    const docVal = getElementValue('doc-center');
+                    if (item.label.includes('Bangor Natural Gas') && docVal !== 'bng') return false;
+                    if (item.label.includes('Maine') && docVal !== 'nu_me') return false;
+                    if (item.label.includes('Hampshire') && docVal !== 'nu_nh') return false;
+                    if (item.label.includes('FG&E') && docVal !== 'fge') return false;
+                }
+                if (item.label.toLowerCase().startsWith('specify other') && (item.value === 'N/A' || item.value.trim() === '')) {
+                    return false;
+                }
+                return true;
+            })
+            .map(item => [item.section, item.label, item.value]);
+
+        (doc as any).autoTable({
+            head: [['Section', 'Field Description', 'Value / Observation']],
+            body: tableData,
+            theme: 'striped',
+            headStyles: { fillColor: [0, 90, 156] },
+            startY: 25,
+            didParseCell: (data: any) => {
+                if (data.cell.section === 'body' && data.column.index === 0) {
+                    if (data.row.index > 0 && data.table.body[data.row.index - 1].cells[0].raw === data.cell.raw) {
+                        data.cell.text = '';
+                    }
+                }
+            },
+            willDrawPage: (data: any) => {
+                doc.setFontSize(18);
+                doc.text("Detailed Assessment Data", 15, 18);
+            }
+        });
+
+        // --- Photographs Section ---
+        if (validImages.length > 0) {
+            doc.addPage();
+            yPos = 25;
+            doc.setFontSize(18);
+            doc.text("Photographs", 15, yPos);
+            yPos += 2;
+            doc.setLineWidth(0.5);
+            doc.line(15, yPos, 195, yPos);
+            yPos += 8;
+            
+            for (const img of validImages) {
+                const pageHeight = doc.internal.pageSize.getHeight();
+                const pageWidth = doc.internal.pageSize.getWidth();
+                const margin = 15;
+
+                const maxWidth = pageWidth - (2 * margin);
+                const maxHeight = pageHeight / 2.5;
+
+                // New, robust scaling logic
+                const widthRatio = maxWidth / img.width;
+                const heightRatio = maxHeight / img.height;
+                // Use Math.min to find the most constraining ratio. Cap at 1 so we don't scale up small images.
+                const ratio = Math.min(widthRatio, heightRatio, 1);
+        
+                const imgWidth = img.width * ratio;
+                const imgHeight = img.height * ratio;
+                
+                const requiredSpace = imgHeight + 25; // Approximate space needed for image and caption
+
+                if (yPos + requiredSpace > pageHeight - margin) {
+                    doc.addPage();
+                    yPos = 25;
+                    doc.setFontSize(18);
+                    doc.text("Photographs (continued)", 15, yPos);
+                    yPos += 2;
+                    doc.setLineWidth(0.5);
+                    doc.line(15, yPos, 195, yPos);
+                    yPos += 8;
+                }
+                
+                const x = (pageWidth - imgWidth) / 2; // Center the image
+                doc.addImage(img.dataUrl, img.type, x, yPos, imgWidth, imgHeight);
+                yPos += imgHeight + 5;
+                
+                doc.setFontSize(9);
+                doc.setTextColor(100);
+                doc.setFont('helvetica', 'bold');
+                doc.text(img.name, pageWidth / 2, yPos, { align: 'center' });
+                yPos += 4;
+
+                if (img.comment) {
+                    doc.setFont('helvetica', 'italic');
+                    doc.setTextColor(120);
+                    const commentText = doc.splitTextToSize(`Comment: ${img.comment}`, maxWidth - 10);
+                    doc.text(commentText, pageWidth / 2, yPos, { align: 'center' });
+                    yPos += commentText.length * 3.5;
+                    doc.setFont('helvetica', 'normal'); // Reset font style after using italic
+                }
+                yPos += 10;
+            }
+        }
+        
+        // Finalize: Add headers and footers to all pages
+        addHeaderFooter();
+
+        doc.save(`Pipeline_Assessment_Report_${crossingId.replace(/[^a-z0-9]/gi, '_') || 'Unnamed'}.pdf`);
+        alert('Report generation complete!');
+    } catch (err) {
+        console.error("Failed to generate report:", err);
+        alert("An unexpected error occurred while generating the report. Check the console for details.");
+    } finally {
+        if (loadingOverlay) loadingOverlay.style.display = 'none';
+    }
+}
+
+// New helper function to create a concise text summary of form data for the AI prompt
+function generateTextSummaryForAI(): string {
+    const reportItems = collectReportData();
+    let lastSection = '';
+    const summaryLines: string[] = [];
+
+    reportItems.forEach(item => {
+        // Exclude bulky file data and truly empty values from the AI prompt.
+        if (item.label.includes('Upload Photographs') ||
+            item.label.includes('Installation Records') ||
+            item.value === 'No files attached.' ||
+            item.value === 'N/A' ||
+            !item.value.trim() ||
+            item.value === 'None selected') {
+            return;
+        }
+
+        if (item.section !== lastSection) {
+            summaryLines.push(`\n## ${item.section}\n`);
+            lastSection = item.section;
+        }
+        summaryLines.push(`- **${item.label.replace(':', '')}:** ${item.value}`);
     });
 
-    doc.save(`Pipeline_Assessment_Report_${crossingId.replace(/[^a-z0-9]/gi, '_') || 'Unnamed'}.pdf`);
-    alert('Report generation complete!');
+    return summaryLines.join('\n');
 }
+
+
+async function handleGenerateReport() {
+    const loadingOverlay = document.getElementById('loading-overlay');
+    const loadingText = document.getElementById('loading-text');
+    const modal = document.getElementById('summary-review-modal');
+
+    if (loadingOverlay && loadingText) {
+        loadingText.textContent = 'Generating Summaries...';
+        loadingOverlay.style.display = 'flex';
+    }
+
+    let executiveSummaryText = "Could not generate summary.";
+    let finalSummaryEvalText = getElementValue('final-summary-evaluation');
+    // Generate a concise text summary instead of sending the entire raw JSON data
+    const textSummaryForAI = generateTextSummaryForAI();
+
+    try {
+        const ai = new GoogleGenAI({ apiKey: API_KEY });
+        
+        const execSummaryPrompt = `Based on the following pipeline assessment data, write a concise, high-level executive summary for the first page of a formal report. Focus on the overall condition, most critical findings, and primary recommendations. The tone should be professional and objective. Data:\n${textSummaryForAI}`;
+        const finalSummaryPrompt = `Based on the following pipeline assessment data, write a detailed "Final Summary of Evaluation". This will be placed in the main data table of the report. It should be a comprehensive paragraph summarizing the key findings, observed conditions, and the justification for the recommendations. Data:\n${textSummaryForAI}`;
+
+        // Run both API calls in parallel
+        const [execSummaryResponse, finalSummaryResponse] = await Promise.all([
+            ai.models.generateContent({ model: 'gemini-2.5-flash-preview-04-17', contents: execSummaryPrompt }),
+            ai.models.generateContent({ model: 'gemini-2.5-flash-preview-04-17', contents: finalSummaryPrompt })
+        ]);
+
+        executiveSummaryText = execSummaryResponse.text;
+        finalSummaryEvalText = finalSummaryResponse.text;
+        
+    } catch (apiError) {
+        console.error("Gemini API Error:", apiError);
+        alert("Warning: Could not connect to the AI service to generate summaries. Please write them manually.");
+        executiveSummaryText = "Failed to generate summary. Please enter manually.";
+        finalSummaryEvalText = getElementValue('final-summary-evaluation') || "Failed to generate summary. Please enter manually.";
+    } finally {
+        if (loadingOverlay) loadingOverlay.style.display = 'none';
+    }
+
+    // --- Setup and Show Modal ---
+    if (!modal) return;
+    const execSummaryTextarea = document.getElementById('modal-exec-summary') as HTMLTextAreaElement;
+    const finalSummaryTextarea = document.getElementById('modal-final-summary') as HTMLTextAreaElement;
+    const cancelButton = document.getElementById('modal-cancel-button');
+    const generatePdfButton = document.getElementById('modal-generate-pdf-button');
+    const execSummaryWrapper = document.getElementById('modal-exec-summary-wrapper')!;
+    const finalSummaryWrapper = document.getElementById('modal-final-summary-wrapper')!;
+
+    execSummaryTextarea.value = executiveSummaryText;
+    finalSummaryTextarea.value = finalSummaryEvalText;
+
+    [execSummaryTextarea, finalSummaryTextarea].forEach(autoResizeTextarea);
+    execSummaryTextarea.oninput = () => autoResizeTextarea(execSummaryTextarea);
+    finalSummaryTextarea.oninput = () => autoResizeTextarea(finalSummaryTextarea);
+
+    // Add improve buttons if in admin mode
+    if (document.body.classList.contains('voice-enabled')) {
+        addImproveButton(execSummaryWrapper, execSummaryTextarea);
+        addImproveButton(finalSummaryWrapper, finalSummaryTextarea);
+    }
+    
+    // Define a single handler for the generate button to be able to remove it later
+    const generateHandler = () => {
+        modal.style.display = 'none';
+        const approvedExec = execSummaryTextarea.value;
+        const approvedFinal = finalSummaryTextarea.value;
+        buildPdfDocument(approvedExec, approvedFinal);
+        generatePdfButton?.removeEventListener('click', generateHandler); // Cleanup
+    };
+
+    if (cancelButton) {
+        cancelButton.onclick = () => {
+            modal.style.display = 'none';
+            generatePdfButton?.removeEventListener('click', generateHandler); // Cleanup
+        };
+    }
+    if (generatePdfButton) {
+        // Remove old listener before adding a new one to prevent multiple triggers
+        generatePdfButton.removeEventListener('click', generateHandler);
+        generatePdfButton.addEventListener('click', generateHandler);
+    }
+
+    modal.style.display = 'flex';
+}
+
 
 function handleLoadExampleAssessment() {
     const today = new Date();
     const year = today.getFullYear();
     const month = (today.getMonth() + 1).toString().padStart(2, '0');
     const day = today.getDate().toString().padStart(2, '0');
-    const currentDate = `${year}-${month}-${day}`;
+    const currentDate = `${year}-${month}-${day}`; // Format for date input: YYYY-MM-DD
+    
+    // Using a 1x1 transparent PNG for image placeholders.
+    const placeholderImageDataUrl = 'data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mNkYAAAAAYAAjCB0C8AAAAASUVORK5CYII=';
+
 
     const exampleData: Record<string, any> = {
         // Section 1: General Site & Crossing Information
         'assessment-date': currentDate,
         'assessor-name': 'Timothy Bickford (Example)',
         'doc-center': 'nu_me', // Northern Utilities - Maine
-        'crossing-description': 'Pipeline crossing attached to the south side of the Rte 109 bridge over the Webhannet River. Access via shoulder of Rte 109. Single span steel girder bridge.',
         'crossing-id': 'ME-WELLS-001-RTE109',
-        'bridge-name': 'Route 109 Bridge',
-        'bridge-number': 'BR-ME-45A',
-        'road-name': 'Route 109',
-        'feature-crossed': 'Webhannet River',
+        'crossing-description': 'Pipeline crossing attached to the south side of the Rte 109 bridge over the Webhannet River. Access via shoulder of Rte 109.',
         'gps-lat': '43.3105° N',
         'gps-lon': '70.5730° W',
+        
+        // Section 2: Bridge & Environmental Context
+        'road-name': 'Route 109',
+        'feature-crossed': 'Webhannet River',
+        'bridge-name': 'Route 109 Bridge',
+        'bridge-number': 'BR-ME-45A',
+        'bridge-type': 'girder',
+        'bridge-material': 'composite',
+        'ambient-temp': '68',
+        'weather-conditions': 'Sunny, clear, light breeze.',
+        'vegetation-growth': 'Minor grass and weeds growing near abutments, but not impacting pipe or supports. No trees in immediate vicinity.',
+        'scour-erosion': 'No significant scour observed around bridge abutments or piers. River banks appear stable.',
+        'proximity-water': 'Pipeline crosses directly over the Webhannet River, a tidal estuary. Pipe is approximately 12 feet above mean high water.',
+        'debris-accumulation': 'Some small branches and leaves accumulated on the lower flange of a bridge girder near the pipe, but not in direct contact or causing an issue.',
 
-        // Section 2: Pipeline Identification & Specifications
+        // Section 3: Pipeline Identification & Specifications
         'pipeline-material': 'steel_pipe',
         'pipeline-diameter': '6', // 6"
         'pipeline-diameter-other': '',
+        'pipe-wall-thickness': '0.280',
+        'pipe-wall-thickness-assessment-type': 'Stamped on Pipe',
+        'installation-temp': '50',
+        'installation-temp-assessment-type': 'Documented in Original Installation Records',
         'nu-me-system-select': nuMeSystems.findIndex(s => s.ds === '535' && s.name === 'Route 109').toString(), // Auto-populates MAOP based on selection
         'maop-unit': 'psig', // Will be auto-populated by nu-me-system-select change
         'maop-value': '56',   // Will be auto-populated
 
-        // Section 3: Pipeline Support & Anchorage System
+        // Section 4: Pipeline Support & Anchorage System
         'pipeline-support-methods-ring_girders': true,
         'pipeline-support-methods-hangers_rods': true,
         'other-support-specify': '',
@@ -1333,25 +2029,26 @@ function handleLoadExampleAssessment() {
         'sliding-roller-functionality-comments': '',
         'support-comments': 'Supports are generally in good condition. Some surface rust on older hanger components. Hangers appear to allow for some longitudinal movement.',
 
-        // Section 4: Thermal Expansion & Movement Accommodation
+        // Section 5: Thermal Expansion & Movement Accommodation
         'pipeline-expansion-features-designed_slack': true,
         'other-expansion-specify': '',
         'expansion-feature-functionality': 'functional_good_condition',
         'expansion-feature-functionality-comments': 'Offsets on either side of the bridge appear to provide adequate slack for thermal movement. No signs of strain.',
         'expansion-comments': 'The pipeline configuration includes gentle bends before and after the bridge attachment, likely accommodating thermal changes.',
 
-        // Section 5: Pipeline Condition & Coating Assessment
+        // Section 6: Pipeline Condition & Coating Assessment
         'external-corrosion': 'minor',
         'coating-type': 'x_tru_coat',
         'other-coating-type-specify': '',
         'coating-condition': 'fair',
         'coating-comments': 'Coating is generally intact. Minor abrasions and scratches noted on the underside of the pipe, possibly from debris or during installation. One area (approx 6" x 2") near a support shows some coating disbondment, requires further investigation.',
-        'monolithic-insulator-present': 'no',
-        'monolithic-insulator-details': '',
+        'test-station-accessible': 'yes',
+        'pipe-to-soil-potential': '-1150',
+        'cp-comments': 'Test station found on east abutment. Reading is well within acceptable limits, indicating effective CP.',
         'pipe-physical-damage': 'One small dent (approx 1" diameter, 1/8" deep) observed on the top of the pipe mid-span. Appears to be old, no associated coating damage.',
         'atmospheric-corrosion-details': 'Minor surface rust on exposed bolts of support clamps. Pipe coating is mostly intact.',
 
-        // Section 6: Pipe Clearances & Measurements
+        // Section 7: Pipe Clearances & Measurements
         'clearance-vertical-above': '3.5',
         'clearance-vertical-above-assessment-type': 'Measured',
         'clearance-vertical-below': '12.0',
@@ -1362,13 +2059,6 @@ function handleLoadExampleAssessment() {
         'clearance-horizontal-other-assessment-type': 'Could not Assess',
         'clearance-comments': 'Vertical clearance to water at mean high tide appears adequate. Clearance to bridge deck is sufficient. Horizontal clearance to abutment is good.',
 
-        // Section 7: Environmental Considerations
-        'vegetation-growth': 'Minor grass and weeds growing near abutments, but not impacting pipe or supports. No trees in immediate vicinity.',
-        'scour-erosion': 'No significant scour observed around bridge abutments or piers. River banks appear stable.',
-        'proximity-water': 'Pipeline crosses directly over the Webhannet River, a tidal estuary. Pipe is approximately 12 feet above mean high water.',
-        'debris-accumulation': 'Some small branches and leaves accumulated on the lower flange of a bridge girder near the pipe, but not in direct contact or causing an issue.',
-        'environmental-comments': 'Area is subject to coastal weather. Ensure coating remains intact to prevent corrosion from salt spray.',
-
         // Section 8: Access & Safety
         'accessibility-inspection': 'fair',
         'safety-hazards': 'Working over water. Traffic on Rte 109 is moderate to heavy. Shoulder is narrow for parking and access.',
@@ -1377,7 +2067,14 @@ function handleLoadExampleAssessment() {
 
         // Section 9: Photographs & Attachments
         'photographs-taken': 'Overall upstream view, overall downstream view, typical support detail, coating abrasion example, dent location, clearance to water.',
-        'file-attachments_filenames': ["Example_Photo1.jpg", "Example_Sketch.png"], // Will show as text, user needs to re-select
+        'installation-records': [
+            { name: "As_Built_Drawing.jpeg", comment: "Image of as-built drawing from original 1998 installation.", type: "image/jpeg", dataUrl: placeholderImageDataUrl }
+        ],
+        'file-attachments': [
+            { name: "Photo_Upstream_View.jpg", comment: "Upstream view showing pipe attachment to bridge girders.", type: "image/jpeg", dataUrl: placeholderImageDataUrl },
+            { name: "Photo_Coating_Damage.jpg", comment: "Close-up of the disbonded coating area near support #3.", type: "image/jpeg", dataUrl: placeholderImageDataUrl },
+            { name: "Sketch_of_Dent.png", comment: "Field sketch showing location and approximate size of dent.", type: "image/png", dataUrl: placeholderImageDataUrl }
+        ],
 
         // Section 10: Third-Party Infrastructure & Proximity
         'other-utilities-bridge': 'Telecom cables also attached to the bridge, approximately 5ft away from the gas pipeline, on the opposite side of the walkway.',
@@ -1391,6 +2088,7 @@ function handleLoadExampleAssessment() {
 
         // Section 12: Recommendations
         'recommendation-actions': 'further_inspection_ndt',
+        'recommendation-priority': 'medium',
         'recommendations-summary': 'Recommend detailed NDT (e.g., UT) on the dented area (1" diameter) on top of pipe mid-span to confirm wall thickness. Also, recommend close-up inspection and potential repair of the 6"x2" area of disbonded coating near support #3. Re-evaluate in 12 months.',
         'final-summary-evaluation': 'The Rte-109 Wells Maine pipeline crossing is generally in fair condition. The primary concerns are a small dent and an area of disbonded coating that require further investigation. Supports and clearances are adequate. No immediate hazards identified.'
     };
@@ -1412,7 +2110,7 @@ document.addEventListener('DOMContentLoaded', () => {
     if (processContainer) processContainer.style.display = 'none';
     
     // Ensure all conditional system select containers are initially hidden by JS too
-    ['nu-me-system-select-container', 'nu-nh-system-select-container', 'fge-system-select-container'].forEach(id => {
+    ['bng-system-select-container', 'nu-me-system-select-container', 'nu-nh-system-select-container', 'fge-system-select-container'].forEach(id => {
         const container = document.getElementById(id);
         if (container) container.style.display = 'none';
     });
@@ -1435,6 +2133,43 @@ document.addEventListener('DOMContentLoaded', () => {
     if (generateReportButton) generateReportButton.addEventListener('click', handleGenerateReport);
     if (exampleAssessmentButton) exampleAssessmentButton.addEventListener('click', handleLoadExampleAssessment);
     
+    // Admin Unlock Logic
+    const adminPasswordInput = document.getElementById('admin-password') as HTMLInputElement;
+    const adminUnlockButton = document.getElementById('admin-unlock-button') as HTMLButtonElement;
+    const adminContainer = document.getElementById('admin-unlock-container');
+
+    if (adminPasswordInput && adminUnlockButton && adminContainer) {
+        const unlockVoiceFeature = () => {
+            if (adminPasswordInput.value === '0665') {
+                document.body.classList.add('voice-enabled');
+                adminContainer.innerHTML = `<span class="unlocked-message">Voice Feature Unlocked</span>`;
+            } else {
+                adminPasswordInput.style.borderColor = '#d9534f'; // A red color for error
+                adminPasswordInput.value = '';
+                adminPasswordInput.placeholder = 'Incorrect';
+                // Vibrate to give haptic feedback on mobile if available
+                if (navigator.vibrate) {
+                    navigator.vibrate(100);
+                }
+            }
+        };
+
+        adminUnlockButton.addEventListener('click', unlockVoiceFeature);
+
+        adminPasswordInput.addEventListener('keypress', (event) => {
+            if (event.key === 'Enter') {
+                event.preventDefault(); // Stop form submission or other default behavior
+                unlockVoiceFeature();
+            }
+        });
+
+        // Reset visual feedback on focus
+        adminPasswordInput.addEventListener('focus', () => {
+            adminPasswordInput.style.borderColor = '';
+            adminPasswordInput.placeholder = 'Code';
+        });
+    }
+
     if (fileInput) {
         fileInput.addEventListener('change', (event) => {
             const file = (event.target as HTMLInputElement).files?.[0];

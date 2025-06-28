@@ -3,14 +3,25 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>UNITIL Natural Gas Pipeline Bridge Crossing Assessment - By: Timothy Bickford</title>
+    <title>UNITIL Natural Gas Pipeline Bridge Crossing Assessment Tool</title>
     <link rel="stylesheet" href="index.css">
+<script type="importmap">
+{
+  "imports": {
+    "@google/genai": "https://esm.sh/@google/genai@^1.7.0"
+  }
+}
+</script>
 <link rel="stylesheet" href="/index.css">
 </head>
 <body>
+    <div id="loading-overlay">
+        <div class="spinner"></div>
+        <p id="loading-text">Generating Report...</p>
+    </div>
     <div id="app-container">
         <header>
-            <h1>UNITIL Natural Gas Pipeline Bridge Crossing Assessment - By: Timothy Bickford</h1>
+            <h1>UNITIL Natural Gas Pipeline Bridge Crossing Assessment Tool</h1>
         </header>
 
         <div id="file-controls">
@@ -19,6 +30,11 @@
             <button id="generate-report-button" class="control-button">Generate Report</button>
             <button id="example-assessment-button" class="control-button">Example Assessment</button>
             <input type="file" id="open-file-input" style="display: none;" accept=".json">
+            <div id="admin-unlock-container">
+                <label for="admin-password">ADMIN</label>
+                <input type="password" id="admin-password" placeholder="Code">
+                <button type="button" id="admin-unlock-button">Unlock</button>
+            </div>
         </div>
 
         <nav id="tab-navigation">
@@ -36,6 +52,34 @@
             </div>
         </main>
     </div>
+
+    <!-- Modal for reviewing AI-generated summaries -->
+    <div id="summary-review-modal" class="modal-overlay">
+        <div class="modal-content">
+            <h2>Review & Approve Summaries</h2>
+            <p>Please review, edit, and approve the AI-generated summaries before the final report is created.</p>
+            
+            <div class="modal-field">
+                <label for="modal-exec-summary">Executive Summary</label>
+                <div id="modal-exec-summary-wrapper" class="input-with-mic-wrapper">
+                    <textarea id="modal-exec-summary"></textarea>
+                </div>
+            </div>
+
+            <div class="modal-field">
+                <label for="modal-final-summary">Final Summary of Evaluation</label>
+                 <div id="modal-final-summary-wrapper" class="input-with-mic-wrapper">
+                    <textarea id="modal-final-summary"></textarea>
+                </div>
+            </div>
+
+            <div class="modal-actions">
+                <button id="modal-cancel-button" class="control-button secondary">Cancel</button>
+                <button id="modal-generate-pdf-button" class="control-button">Generate Final PDF</button>
+            </div>
+        </div>
+    </div>
+
     <script src="https://cdnjs.cloudflare.com/ajax/libs/jspdf/2.5.1/jspdf.umd.min.js"></script>
     <script src="https://cdnjs.cloudflare.com/ajax/libs/jspdf-autotable/3.8.2/jspdf.plugin.autotable.min.js"></script>
     <script type="module" src="index.tsx"></script>

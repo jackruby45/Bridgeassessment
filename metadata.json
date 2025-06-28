@@ -1,6 +1,8 @@
 {
-  "name": "Copy of Pipeline Bridge Crossing Assessment Form",
+  "name": "Version 7 Pipeline Bridge Crossing Assessment Form",
   "description": "A comprehensive form for evaluating natural gas distribution pipelines at bridge crossings.",
-  "requestFramePermissions": [],
+  "requestFramePermissions": [
+    "microphone"
+  ],
   "prompt": ""
 }
