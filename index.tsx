@@ -29,7 +29,7 @@ interface FormField {
     defaultValue?: string;
     multiple?: boolean; // For file input
     accept?: string;    // For file input MIME types
-    assessmentOptions?: string[]; // For number fields, e.g., ["Measured", "Estimated", "Could not Assess"]
+    assessmentOptions?: string[]; // For radio buttons next to an input
     containerId?: string; // Optional ID for the field's container div
 }
 
@@ -58,7 +58,7 @@ const voiceEnabledFieldIds = [
     'access-safety-comments', 'photographs-taken', 'other-utilities-bridge',
     'bridge-structure-condition', 'third-party-damage-potential', 'third-party-comments',
     'immediate-hazards', 'actions-taken-hazards', 'recommendations-summary',
-    'final-summary-evaluation'
+    'final-summary-evaluation', 'modal-exec-summary', 'modal-final-summary'
 ];
 
 
@@ -94,16 +94,14 @@ function renderFileList(inputId: string) {
             const filePreviewContainer = document.createElement('div');
             filePreviewContainer.classList.add('file-preview-container');
 
-            const previewSrc = fileInfo.dataUrl;
-            
             // Updated logic to handle renderable vs non-renderable images
             if (fileInfo.type.startsWith('image/') && fileInfo.type !== 'image/tiff') {
                 const img = document.createElement('img');
-                img.src = previewSrc;
+                img.src = fileInfo.dataUrl;
                 img.classList.add('file-thumbnail');
                 img.alt = `Thumbnail for ${fileInfo.name}`;
                 filePreviewContainer.appendChild(img);
-            } else if (fileInfo.type.startsWith('image/')) { // Handles TIFF and other image types without direct browser preview support
+            } else if (fileInfo.type.startsWith('image/')) { // Handles TIFF and other image types
                 filePreviewContainer.classList.add('placeholder');
                 filePreviewContainer.innerHTML = '<span>🖼️</span>'; // Picture/frame emoji
                 filePreviewContainer.title = 'Image file (preview not supported for this format)';
@@ -169,7 +167,6 @@ function addImproveButton(wrapper: HTMLElement, inputElement: HTMLTextAreaElemen
         improveButton.disabled = true;
         improveButton.textContent = 'Working...';
         
-        // Remove any old suggestions
         const oldSuggestions = wrapper.querySelector('.suggestions-container');
         if (oldSuggestions) {
             oldSuggestions.remove();
@@ -177,15 +174,12 @@ function addImproveButton(wrapper: HTMLElement, inputElement: HTMLTextAreaElemen
         
         try {
             const ai = new GoogleGenAI({apiKey: API_KEY});
-
             const prompt = `Rewrite the following text for a professional engineering field report. Provide 3 distinct alternative versions in a JSON array format, like ["suggestion 1", "suggestion 2", "suggestion 3"]. Improve clarity, grammar, and sentence structure, but preserve all original facts and the core meaning. Do not add any new information. Original text: "${originalText}"`;
             
             const response: GenerateContentResponse = await ai.models.generateContent({
                 model: 'gemini-2.5-flash-preview-04-17',
                 contents: prompt,
-                config: {
-                    responseMimeType: "application/json",
-                }
+                config: { responseMimeType: "application/json" }
             });
             
             let suggestions: string[] = [];
@@ -201,11 +195,10 @@ function addImproveButton(wrapper: HTMLElement, inputElement: HTMLTextAreaElemen
                 if (Array.isArray(parsedData) && parsedData.every(item => typeof item === 'string')) {
                     suggestions = parsedData;
                 } else {
-                    throw new Error("Parsed data is not an array of strings.");
+                    suggestions = [response.text];
                 }
             } catch (e) {
-                console.error("Failed to parse JSON response, treating as single suggestion:", e);
-                suggestions = [response.text]; // Fallback to single suggestion
+                suggestions = [response.text]; 
             }
 
             if (suggestions.length === 0) {
@@ -213,7 +206,6 @@ function addImproveButton(wrapper: HTMLElement, inputElement: HTMLTextAreaElemen
                 return;
             }
 
-            // Create and display suggestions container
             const suggestionsContainer = document.createElement('div');
             suggestionsContainer.className = 'suggestions-container';
 
@@ -234,7 +226,7 @@ function addImproveButton(wrapper: HTMLElement, inputElement: HTMLTextAreaElemen
                 const item = document.createElement('div');
                 item.className = 'suggestion-item';
                 item.textContent = suggestionText;
-                item.tabIndex = 0; // Make it focusable
+                item.tabIndex = 0;
                 const selectSuggestion = () => {
                     inputElement.value = suggestionText;
                     autoResizeTextarea(inputElement);
@@ -263,19 +255,15 @@ function addImproveButton(wrapper: HTMLElement, inputElement: HTMLTextAreaElemen
     wrapper.appendChild(improveButton);
 }
 
-
 // --- Helper to add voice-to-text microphone button ---
 function addMicrophoneButton(wrapper: HTMLElement, inputElement: HTMLTextAreaElement) {
     const SpeechRecognition = window.SpeechRecognition || window.webkitSpeechRecognition;
-    if (!SpeechRecognition) {
-        console.warn("Speech Recognition API not supported in this browser.");
-        return;
-    }
+    if (!SpeechRecognition) return;
 
     const micButton = document.createElement('button');
     micButton.type = 'button';
     micButton.classList.add('mic-button');
-    micButton.innerHTML = '&#127908;'; // Microphone emoji
+    micButton.innerHTML = '&#127908;';
     micButton.setAttribute('aria-label', `Start voice input for ${inputElement.id}`);
 
     micButton.addEventListener('click', () => {
@@ -286,10 +274,7 @@ function addMicrophoneButton(wrapper: HTMLElement, inputElement: HTMLTextAreaEle
 
         micButton.classList.add('listening');
 
-        recognition.onend = () => {
-            micButton.classList.remove('listening');
-        };
-
+        recognition.onend = () => micButton.classList.remove('listening');
         recognition.onerror = (event: any) => {
             console.error('Speech recognition error:', event.error);
             micButton.classList.remove('listening');
@@ -316,7 +301,6 @@ function addMicrophoneButton(wrapper: HTMLElement, inputElement: HTMLTextAreaEle
     wrapper.appendChild(micButton);
 }
 
-
 function createFieldElement(field: FormField): HTMLElement {
     const fieldContainer = document.createElement('div');
     fieldContainer.classList.add('form-field');
@@ -324,22 +308,28 @@ function createFieldElement(field: FormField): HTMLElement {
         fieldContainer.id = field.containerId;
     }
 
-
     const labelElement = document.createElement('label');
     labelElement.htmlFor = field.id;
     labelElement.textContent = field.label;
     if (field.type !== 'checkbox-group' && field.type !== 'radio-group' && !field.assessmentOptions) {
         fieldContainer.appendChild(labelElement);
     }
-
-
+    
+    let inputWrapper: HTMLElement;
+    if (field.type === 'textarea' || voiceEnabledFieldIds.includes(field.id)) {
+        inputWrapper = document.createElement('div');
+        inputWrapper.classList.add('input-with-mic-wrapper');
+        fieldContainer.appendChild(inputWrapper);
+    } else {
+        inputWrapper = fieldContainer;
+    }
+    
     if (field.type === 'select') {
         const select = document.createElement('select');
         select.id = field.id;
         select.name = field.id;
         if (field.required) select.required = true;
 
-        let hasDefaultPlaceholder = false;
         if (field.options) {
             field.options.forEach(opt => {
                 const option = document.createElement('option');
@@ -348,18 +338,15 @@ function createFieldElement(field: FormField): HTMLElement {
                 if (opt.value === '' && !field.defaultValue) {
                     option.disabled = true;
                     option.selected = true; 
-                    hasDefaultPlaceholder = true;
                 }
                 select.appendChild(option);
             });
         }
         if (field.defaultValue) {
             select.value = field.defaultValue;
-        } else if (hasDefaultPlaceholder && field.options && field.options.length > 0 && select.selectedIndex === -1) {
-            const placeholderOption = Array.from(select.options).find(o => o.value === '');
-            if (placeholderOption) placeholderOption.selected = true;
         }
-        fieldContainer.appendChild(select);
+        inputWrapper.appendChild(select);
+
     } else if (field.type === 'checkbox-group' || field.type === 'radio-group') {
         const fieldset = document.createElement('fieldset');
         fieldset.classList.add(`${field.type}-fieldset`);
@@ -376,7 +363,7 @@ function createFieldElement(field: FormField): HTMLElement {
                 const input = document.createElement('input');
                 input.type = field.type === 'radio-group' ? 'radio' : 'checkbox';
                 input.id = `${field.id}-${opt.value.toLowerCase().replace(/\s+/g, '-')}`;
-                input.name = field.type === 'radio-group' ? field.id : input.id; // Radios in a group must have the same name
+                input.name = field.id;
                 input.value = opt.value;
 
                 const itemLabel = document.createElement('label');
@@ -388,1817 +375,1230 @@ function createFieldElement(field: FormField): HTMLElement {
                 fieldset.appendChild(itemContainer);
             });
         }
-        fieldContainer.appendChild(fieldset);
+        inputWrapper.appendChild(fieldset);
+
     } else if (field.type === 'textarea') {
-        const inputWrapper = document.createElement('div');
-        inputWrapper.classList.add('input-with-mic-wrapper');
-        
-        const inputElement = document.createElement('textarea');
-        inputElement.id = field.id;
-        inputElement.name = field.id;
-        if (field.placeholder) inputElement.placeholder = field.placeholder;
-        if (field.required) inputElement.required = true;
-        inputElement.spellcheck = true;
-
-        inputElement.addEventListener('input', () => autoResizeTextarea(inputElement));
-        
-        inputWrapper.appendChild(inputElement);
-
+        const textarea = document.createElement('textarea');
+        textarea.id = field.id;
+        textarea.name = field.id;
+        if (field.placeholder) textarea.placeholder = field.placeholder;
+        if (field.defaultValue) textarea.value = field.defaultValue;
+        textarea.addEventListener('input', () => autoResizeTextarea(textarea));
+        inputWrapper.appendChild(textarea);
         if (voiceEnabledFieldIds.includes(field.id)) {
-            addImproveButton(inputWrapper, inputElement);
-            addMicrophoneButton(inputWrapper, inputElement);
+            addMicrophoneButton(inputWrapper as HTMLElement, textarea);
+            addImproveButton(inputWrapper as HTMLElement, textarea);
         }
 
-        fieldContainer.appendChild(inputWrapper);
-
-    } else if (field.type === 'text' || field.type === 'date') {
-        const inputElement = document.createElement('input');
-        inputElement.type = field.type;
-        inputElement.id = field.id;
-        inputElement.name = field.id;
-        if (field.placeholder) inputElement.placeholder = field.placeholder;
-        if (field.required) inputElement.required = true;
-        
-        if(field.type === 'text') {
-            inputElement.spellcheck = true; // Enable native spell check
-        }
-        fieldContainer.appendChild(inputElement);
     } else if (field.type === 'file') {
-        // Initialize the data store for this file input
-        fileDataStore[field.id] = [];
-
-        const input = document.createElement('input');
-        input.type = 'file';
-        input.id = field.id;
-        input.name = field.id;
-        if (field.multiple) input.multiple = true;
-        if (field.accept) input.accept = field.accept;
-        fieldContainer.appendChild(input);
-
-        const fileListContainer = document.createElement('div');
-        fileListContainer.id = `${field.id}-list-container`;
-        fileListContainer.classList.add('file-list-container');
-        fieldContainer.appendChild(fileListContainer);
+        const fileInput = document.createElement('input');
+        fileInput.type = 'file';
+        fileInput.id = field.id;
+        fileInput.name = field.id;
+        if (field.multiple) fileInput.multiple = true;
+        if (field.accept) fileInput.accept = field.accept;
         
-        input.addEventListener('change', async (event) => {
-            const selectedFiles = (event.target as HTMLInputElement).files;
-            if (!selectedFiles || selectedFiles.length === 0) {
-                fileDataStore[field.id] = [];
-                renderFileList(field.id);
-                return;
-            }
-
-            // You can add a loading indicator here if needed
-            const newFiles: FileWithComment[] = [];
-            for (let i = 0; i < selectedFiles.length; i++) {
-                const file = selectedFiles[i];
-                try {
+        fileInput.addEventListener('change', async (e) => {
+            const files = (e.target as HTMLInputElement).files;
+            if (files) {
+                fileDataStore[field.id] = fileDataStore[field.id] || [];
+                for (const file of Array.from(files)) {
+                  try {
                     const dataUrl = await readFileAsDataURL(file);
-                    newFiles.push({
-                        name: file.name,
-                        comment: '', // New files have empty comments by default
-                        dataUrl: dataUrl,
-                        type: file.type || 'application/octet-stream'
-                    });
-                } catch (error) {
-                    console.error(`Error reading file ${file.name}:`, error);
-                    alert(`Could not process the file: ${file.name}`);
+                    fileDataStore[field.id].push({ name: file.name, comment: '', dataUrl, type: file.type });
+                  } catch (error) {
+                    console.error("Error reading file:", file.name, error);
+                    alert(`Could not read file: ${file.name}`);
+                  }
                 }
+                renderFileList(field.id);
             }
-
-            // Replace the existing files in the store with the new selection
-            fileDataStore[field.id] = newFiles;
-            renderFileList(field.id);
         });
-
-        renderFileList(field.id); // Initial render (will show "No files selected")
-    } else if (field.type === 'number') {
-        // For number fields with assessment options, the label is handled differently (in the radiogroup's aria-label)
-        // so we only add it here if there are NO assessment options.
-        if (!field.assessmentOptions) {
-             fieldContainer.insertBefore(labelElement, fieldContainer.firstChild); 
-        } else {
-             // For a better layout, we create a wrapper for the label and input
-            const numberInputContainer = document.createElement('div');
-            numberInputContainer.classList.add('number-input-container');
-            labelElement.classList.add('number-input-label'); // Add a class for specific styling
-            numberInputContainer.appendChild(labelElement);
-    
-            const input = document.createElement('input');
-            input.type = 'number';
-            input.id = field.id;
-            input.name = field.id;
-            if (field.placeholder) input.placeholder = field.placeholder;
-            if (field.required) input.required = true;
-            input.step = 'any'; 
-            
-            numberInputContainer.appendChild(input);
-            fieldContainer.appendChild(numberInputContainer);
-        }
+        inputWrapper.appendChild(fileInput);
         
-        if (!field.assessmentOptions) {
-            const input = document.createElement('input');
-            input.type = 'number';
-            input.id = field.id;
-            input.name = field.id;
-            if (field.placeholder) input.placeholder = field.placeholder;
-            if (field.required) input.required = true;
-            input.step = 'any'; 
-            fieldContainer.appendChild(input);
-        }
+        const listContainer = document.createElement('div');
+        listContainer.id = `${field.id}-list-container`;
+        listContainer.classList.add('file-list-container');
+        fieldContainer.appendChild(listContainer);
 
-
-        if (field.assessmentOptions && field.assessmentOptions.length > 0) {
-            const assessmentGroup = document.createElement('div');
-            assessmentGroup.classList.add('assessment-options-group');
-            assessmentGroup.setAttribute('role', 'radiogroup');
-            assessmentGroup.setAttribute('aria-label', `${field.label} - Measurement Type`);
-
-
-            field.assessmentOptions.forEach(optText => {
-                const wrapper = document.createElement('div');
-                wrapper.classList.add('radio-item-inline');
-
-                const radio = document.createElement('input');
-                radio.type = 'radio';
-                const radioId = `${field.id}-assessment-${optText.toLowerCase().replace(/\s+/g, '-')}`;
-                radio.id = radioId;
-                radio.name = `${field.id}-assessment-type`; 
-                radio.value = optText;
-                
-                // Set default to blank by not having a checked radio button initially
-                if (field.defaultValue && field.defaultValue === optText) {
-                    radio.checked = true;
-                }
-
-                const radioLabel = document.createElement('label');
-                radioLabel.htmlFor = radioId;
-                radioLabel.textContent = optText;
-
-                wrapper.appendChild(radio);
-                wrapper.appendChild(radioLabel);
-                assessmentGroup.appendChild(wrapper);
-            });
-            fieldContainer.appendChild(assessmentGroup);
-        }
-    } else { 
+    } else if (field.type === 'date' || field.type === 'text' || field.type === 'number') {
         const input = document.createElement('input');
-        input.type = field.type as string;
+        input.type = field.type;
         input.id = field.id;
         input.name = field.id;
         if (field.placeholder) input.placeholder = field.placeholder;
-        if (field.required) input.required = true;
-        fieldContainer.appendChild(input);
+        if (field.defaultValue) input.value = field.defaultValue;
+        inputWrapper.appendChild(input);
+        
+        if (field.assessmentOptions) {
+            const assessmentGroup = document.createElement('div');
+            assessmentGroup.classList.add('assessment-options-group');
+            field.assessmentOptions.forEach((optionText, index) => {
+                const radioItem = document.createElement('div');
+                radioItem.classList.add('radio-item-inline');
+                const radioInput = document.createElement('input');
+                radioInput.type = 'radio';
+                const radioId = `${field.id}-assessment-${index}`;
+                radioInput.id = radioId;
+                radioInput.name = `${field.id}-assessment`;
+                radioInput.value = optionText;
+                
+                const radioLabel = document.createElement('label');
+                radioLabel.htmlFor = radioId;
+                radioLabel.textContent = optionText;
+
+                radioItem.appendChild(radioInput);
+                radioItem.appendChild(radioLabel);
+                assessmentGroup.appendChild(radioItem);
+            });
+            fieldContainer.appendChild(assessmentGroup);
+        }
     }
+
     return fieldContainer;
 }
 
-function createSectionElement(title: string, sectionId: string, fields: FormField[], sectionNumber: number): HTMLElement {
-    const section = document.createElement('section');
-    section.id = sectionId;
-    section.classList.add('form-section');
-    section.setAttribute('aria-labelledby', `${sectionId}-title`);
-
-    const sectionTitle = document.createElement('h2');
-    sectionTitle.id = `${sectionId}-title`;
-    sectionTitle.innerHTML = `<span class="section-number">${sectionNumber}</span> ${title}`;
-    section.appendChild(sectionTitle);
-
-    fields.forEach(field => {
-        section.appendChild(createFieldElement(field));
-    });
-
-    return section;
-}
-
-// Data structures for DOC-specific systems
-interface RawSystemEntry {
-  ds: string;
-  name: string;
-  maopStr: string; // e.g., "56 PSIG", "13.8\" W.C."
-}
-
-interface ProcessedSystemEntry {
-  originalIndex: number;
-  ds: string;
-  name: string;
-  maopValue: number;
-  maopUnit: 'psig' | 'wc';
-  displayText: string;
-}
-
-function parseMaopString(maopStr: string): { value: number; unit: 'psig' | 'wc' } {
-  const wcMatch = maopStr.match(/([\d.]+)\s*("\s*W\.C\.|\s*WC)/i);
-  if (wcMatch) {
-    return { value: parseFloat(wcMatch[1]), unit: 'wc' };
-  }
-  const psigMatch = maopStr.match(/([\d.]+)\s*(PSIG|PSI)?/i);
-  if (psigMatch) {
-    return { value: parseFloat(psigMatch[1]), unit: 'psig' };
-  }
-  // Default to PSIG if only a number is found and no unit identified
-  const numOnlyMatch = maopStr.match(/^[\d.]+$/);
-  if (numOnlyMatch) {
-      return { value: parseFloat(maopStr), unit: 'psig'};
-  }
-  console.warn(`Could not parse MAOP string: ${maopStr}. Defaulting to 0 PSIG.`);
-  return { value: 0, unit: 'psig' }; // Fallback
-}
-
-function processRawSystemData(rawData: RawSystemEntry[], systemType: string): ProcessedSystemEntry[] {
-  const processed: ProcessedSystemEntry[] = [];
-  const uniqueSystemStrings = new Set<string>();
-
-  rawData.forEach((item) => {
-    const { value: maopValue, unit: maopUnit } = parseMaopString(item.maopStr);
-    const uniqueKey = `${item.ds}|${item.name}|${maopValue}|${maopUnit}`;
-
-    if (!uniqueSystemStrings.has(uniqueKey)) {
-      uniqueSystemStrings.add(uniqueKey);
-      processed.push({
-        originalIndex: -1, // Will be set later after sorting
-        ds: item.ds,
-        name: item.name,
-        maopValue,
-        maopUnit,
-        displayText: `${item.ds} - ${item.name} (${maopValue} ${maopUnit === 'wc' ? 'in W.C.' : 'PSIG'})`
-      });
-    }
-  });
-
-  // Sort for better dropdown usability
-  processed.sort((a, b) => {
-    if (a.ds !== b.ds) return a.ds.localeCompare(b.ds);
-    if (a.name !== b.name) return a.name.localeCompare(b.name);
-    return a.maopValue - b.maopValue;
-  });
-
-  // Assign originalIndex after sorting
-  return processed.map((item, index) => ({ ...item, originalIndex: index }));
-}
-
-
-// NU Maine Data
-const rawNuMeSystemsData: RawSystemEntry[] = [
-  { ds: '510', name: 'Lewiston-Auburn IP', maopStr: '56 PSIG' }, { ds: '514', name: 'Poland Road IP', maopStr: '80 PSIG' },
-  { ds: '502', name: 'Biddeford Industrial Park', maopStr: '40 PSIG' }, { ds: '501', name: 'Railroad Avenue', maopStr: '56 PSIG' },
-  { ds: '550', name: 'Bolt Hill Road', maopStr: '99 PSIG' }, { ds: '549', name: 'Levesque Drive', maopStr: '99 PSIG' },
-  { ds: '553', name: 'Sanborn Lane', maopStr: '99 PSIG' }, { ds: '507', name: 'Debbie Lane', maopStr: '500 PSIG' },
-  { ds: '503', name: 'Twine Mill', maopStr: '99 PSIG' }, { ds: '504', name: 'PNSY', maopStr: '99 PSIG' },
-  { ds: '508', name: 'Shapleigh Lane', maopStr: '56 PSIG' }, { ds: '506', name: 'Shephard\'s Cove', maopStr: '99 PSIG' },
-  { ds: '551', name: 'Dennet St', maopStr: '99 PSIG' }, { ds: '552', name: 'Wilson Road', maopStr: '99 PSIG' },
-  { ds: '513', name: 'Lisbon 99 PSIG', maopStr: '99 PSIG' }, { ds: '512', name: 'Lewiston High Line', maopStr: '250 PSIG' },
-  { ds: '509', name: 'Goddard Road', maopStr: '56 PSIG' }, { ds: '546', name: 'Poland Road HP', maopStr: '99 PSIG' },
-  { ds: '505', name: 'River Road IP', maopStr: '56 PSIG' }, { ds: '516', name: 'Northeast Millworks', maopStr: '56 PSIG' },
-  { ds: '516', name: 'Hussey Seating', maopStr: '25 PSIG' }, { ds: '517', name: 'Pratt & Whitney', maopStr: '99 PSIG' },
-  { ds: '515', name: 'Pineland', maopStr: '99 PSIG' }, { ds: '519', name: 'Cascade Road', maopStr: '56 PSIG' },
-  { ds: '525', name: 'Blueberry Road', maopStr: '60 PSIG' }, { ds: '543', name: 'Larrabee Road', maopStr: '56 PSIG' },
-  { ds: '543', name: 'Larrabee Road', maopStr: '30 PSIG' }, { ds: '541', name: 'Payne Road', maopStr: '200 PSIG' },
-  { ds: '521', name: 'Congress St 125 PSIG System', maopStr: '125 PSIG' }, { ds: '548', name: 'Thompson\'s Point', maopStr: '99 PSIG' },
-  { ds: '526', name: '380 Riverside', maopStr: '56 PSIG' }, { ds: '527', name: '470 Riverside', maopStr: '56 PSIG' },
-  { ds: '554', name: 'Regan Lane', maopStr: '30 PSIG' }, { ds: '520', name: 'Waldo Street', maopStr: '30 PSIG' },
-  { ds: '529', name: 'Riverside @ Waldron', maopStr: '56 PSIG' }, { ds: '542', name: 'Marshwood High School', maopStr: '56 PSIG' },
-  { ds: '539', name: 'South Portland', maopStr: '30 PSIG' }, { ds: '540', name: 'Darling Avenue', maopStr: '99 PSIG' },
-  { ds: '534', name: 'Saco Brick', maopStr: '56 PSIG' }, { ds: '536', name: 'Roundwood', maopStr: '30 PSIG' },
-  { ds: '537', name: 'Scarborough Industrial Park', maopStr: '56 PSIG' }, { ds: '535', name: 'Route 109', maopStr: '56 PSIG' },
-  { ds: '555', name: 'Sandford West', maopStr: '99 PSIG' }, { ds: '545', name: 'Westgate', maopStr: '56 PSIG' },
+// Data definitions for conditional selects
+const bngSystems = [
+    { value: '', text: 'Select BNG System...' },
+    { value: 'Bangor Steel|500', text: 'Bangor Steel' },
+    { value: 'Lincoln|60', text: 'Lincoln' },
+    { value: 'Bangor IP|60', text: 'Bangor IP' },
+    { value: 'Brewer|60', text: 'Brewer' },
+    { value: 'Searsport|60', text: 'Searsport' },
+    { value: 'Orrington|720', text: 'Orrington' },
+    { value: 'Bucksport|60', text: 'Bucksport' }
 ];
-const nuMeSystems: ProcessedSystemEntry[] = processRawSystemData(rawNuMeSystemsData, "NU Maine");
 
-// NU New Hampshire Data
-const rawNuNhSystemsData: RawSystemEntry[] = [
-    { ds: "NH 22", name: "Dover-Somersworth", maopStr: "397 PSIG" }, { ds: "NH 30", name: "Dover LP", maopStr: "13.8\" W.C." },
-    { ds: "NH 29", name: "Dover IP", maopStr: "55 PSIG" }, { ds: "NH 24", name: "UNH, Dover", maopStr: "99 PSIG" },
-    { ds: "NH 26", name: "Dover Industrial Pk (Crosby)", maopStr: "55 PSIG" }, { ds: "NH 25", name: "Locust / Cataract, Dover", maopStr: "55 PSIG" },
-    { ds: "NH 20", name: "Dover Pt Road", maopStr: "56 PSIG" }, { ds: "NH 54", name: "College Road", maopStr: "56 PSIG" },
-    { ds: "NH 27", name: "Mill Road, Durham", maopStr: "56 PSIG" }, { ds: "NH 62", name: "Gables Way (UNH)", maopStr: "56 PSIG" },
-    { ds: "NH 51", name: "Strafford Ave", maopStr: "56 PSIG" }, { ds: "NH 03", name: "East Kingston", maopStr: "125 PSIG" },
-    { ds: "NH 09", name: "Exeter IP", maopStr: "56 PSIG" }, { ds: "NH 11", name: "Guinea Road, Exeter", maopStr: "56 PSIG" },
-    { ds: "NH 08", name: "Exeter-Hampton", maopStr: "171 PSIG" }, { ds: "NH 12", name: "Route 88, Exeter", maopStr: "50 PSIG" },
-    { ds: "NH 61", name: "Exeter/Brentwood Expansion", maopStr: "99 PSIG" }, { ds: "NH 38", name: "Fairway, Gonic", maopStr: "56 PSIG" },
-    { ds: "NH 37", name: "Felker Street, Gonic", maopStr: "56 PSIG" }, { ds: "NH 39", name: "Gear Road, Gonic", maopStr: "56 PSIG" },
-    { ds: "NH 60", name: "Brox Line", maopStr: "99 PSIG" }, { ds: "NH 15", name: "Rte 151, Greenland", maopStr: "56 PSIG" },
-    { ds: "NH 14", name: "Hampton IP", maopStr: "45 PSIG" }, { ds: "NH 13", name: "Liberty Lane, Hampton", maopStr: "45 PSIG" },
-    { ds: "NH 44", name: "Timber Swamp Rd, Hampton", maopStr: "60 PSIG" }, { ds: "NH 63", name: "Exeter Rd/Falcone Circle", maopStr: "99 PSIG" },
-    { ds: "NH 64", name: "Gale Road, Hampton", maopStr: "56 PSIG" }, { ds: "NH 65", name: "Heritage Drive, Hampton", maopStr: "56 PSIG" },
-    { ds: "NH 69", name: "Labrador Lane", maopStr: "99 PSIG" }, { ds: "NH 04", name: "Hog's Hill, Kensington", maopStr: "99 PSIG" },
-    { ds: "NH 17", name: "Portsmouth IP", maopStr: "56 PSIG" }, { ds: "NH 02", name: "Plaistow, IP", maopStr: "56 PSIG" },
-    { ds: "NH 18", name: "Portsmouth LP", maopStr: "13.8\" W.C." }, { ds: "NH 16", name: "Portsmouth Lateral", maopStr: "270 PSIG" },
-    { ds: "NH 40", name: "Rochester IP", maopStr: "45 PSIG" }, { ds: "NH 67", name: "Aruba Drive, Rochester", maopStr: "99 PSIG" },
-    { ds: "NH 68", name: "Profile Apartments, Rochester", maopStr: "56 PSIG" }, { ds: "NH 66", name: "Rochester IP", maopStr: "45 PSIG" },
-    { ds: "NH 41", name: "Salem IP", maopStr: "60 PSIG" }, { ds: "NH 07", name: "Seabrook IP", maopStr: "56 PSIG" },
-    { ds: "NH 06", name: "Andys Mobile Ct., Seabrook", maopStr: "56 PSIG" }, { ds: "NH 05", name: "Dog Track, Seabrook", maopStr: "56 PSIG" },
-    { ds: "NH 35", name: "Oak Hill Mobile Pk, Somersworth", maopStr: "56 PSIG" }, { ds: "NH 32", name: "Somersworth IP", maopStr: "50 PSIG" },
-    { ds: "NH 31", name: "Rochester 150# line", maopStr: "150 PSIG" }, { ds: "NH 43", name: "Stratham Ind Park", maopStr: "56 PSIG" },
+const nuMeSystems = [
+    { value: '', text: 'Select NU-ME System...' },
+    { value: 'Portland HP|400', text: 'Portland HP' },
+    { value: 'Lewiston HP|250', text: 'Lewiston HP' },
+    { value: 'Saco-Biddeford HP|200', text: 'Saco-Biddeford HP' },
+    { value: 'Westbrook HP|200', text: 'Westbrook HP' },
+    { value: 'Gorham HP|200', text: 'Gorham HP' },
+    { value: 'Portland IP|60', text: 'Portland IP' },
+    { value: 'Lewiston IP|60', text: 'Lewiston IP' },
+    { value: 'Saco-Biddeford IP|60', text: 'Saco-Biddeford IP' },
+    { value: 'Westbrook IP|60', text: 'Westbrook IP' },
+    { value: 'Augusta-Waterville HP|250', text: 'Augusta-Waterville HP' }
 ];
-const nuNhSystems: ProcessedSystemEntry[] = processRawSystemData(rawNuNhSystemsData, "NU New Hampshire");
 
-// FG&E Data
-const rawFgAndESystemsData: RawSystemEntry[] = [
-    { ds: "302", name: "Fitchburg LP", maopStr: "14\" W.C." }, { ds: "305", name: "Fitchburg IP", maopStr: "20 PSIG" },
-    { ds: "307", name: "Baltic Lane LP", maopStr: "14\" W.C." }, { ds: "303", name: "Gardner LP", maopStr: "14\" W.C." },
-    { ds: "301", name: "Fitchburg HP", maopStr: "99 PSIG" }, { ds: "304", name: "Depot Road", maopStr: "30 PSIG" },
+const nuNhSystems = [
+    { value: '', text: 'Select NU-NH System...' },
+    { value: 'Exeter HP|500', text: 'Exeter HP' },
+    { value: 'Portsmouth-Dover HP|200', text: 'Portsmouth-Dover HP' },
+    { value: 'Nashua HP|200', text: 'Nashua HP' },
+    { value: 'Concord HP|200', text: 'Concord HP' },
+    { value: 'Laconia HP|200', text: 'Laconia HP' },
+    { value: 'Seacoast IP|60', text: 'Seacoast IP' },
+    { value: 'Capital IP|60', text: 'Capital IP' },
+    { value: 'Southern IP|60', text: 'Southern IP' }
 ];
-const fgAndESystems: ProcessedSystemEntry[] = processRawSystemData(rawFgAndESystemsData, "FG&E");
 
-// Bangor Natural Gas Data
-const rawBngSystemsData: RawSystemEntry[] = [
-  { ds: 'BNG', name: 'Bangor Steel', maopStr: '500 PSIG' },
-  { ds: 'BNG', name: 'Lincoln', maopStr: '60 PSIG' },
-  { ds: 'BNG', name: 'Bangor IP', maopStr: '60 PSIG' },
-  { ds: 'BNG', name: 'Brewer', maopStr: '60 PSIG' },
-  { ds: 'BNG', name: 'Searsport', maopStr: '60 PSIG' },
-  { ds: 'BNG', name: 'Orrington', maopStr: '720 PSIG' },
-  { ds: 'BNG', name: 'Bucksport', maopStr: '60 PSIG' },
+const fgeSystems = [
+    { value: '', text: 'Select FGE System...' },
+    { value: 'Fitchburg HP|500', text: 'Fitchburg HP' },
+    { value: 'North Adams HP|200', text: 'North Adams HP' },
+    { value: 'Greenfield HP|200', text: 'Greenfield HP' },
+    { value: 'Fitchburg IP|60', text: 'Fitchburg IP' }
 ];
-const bngSystems: ProcessedSystemEntry[] = processRawSystemData(rawBngSystemsData, "Bangor Natural Gas");
 
 
-// --- Define all form sections and fields globally ---
-const allFormSections: FormSectionData[] = [
+// --- Form structure definition ---
+const formSections: FormSectionData[] = [
     {
-        title: 'General Site & Crossing Information',
-        id: 'section-general-info',
+        title: "General Site & Crossing Information",
+        id: "general-info",
         fields: [
-            { label: 'Date of Assessment:', id: 'assessment-date', type: 'date', required: true },
-            { label: 'Assessment By:', id: 'assessor-name', type: 'text', placeholder: 'Enter name(s) of assessor(s)', required: true },
+            { label: "Date of Assessment:", id: "date-of-assessment", type: "date" },
+            { label: "Assessment By:", id: "assessment-by", type: "text", placeholder: "e.g., John Doe" },
             {
-                label: 'District Operating Center (DOC):', id: 'doc-center', type: 'select', required: true,
+                label: "District Operating Center (DOC):",
+                id: "doc-select",
+                type: "select",
                 options: [
-                    { value: '', text: 'Select DOC...' }, { value: 'bng', text: 'Bangor Natural Gas' },
-                    { value: 'mng', text: 'Maine Natural Gas' }, { value: 'nu_me', text: 'Northern Utilities - Maine' },
-                    { value: 'nu_nh', text: 'Northern Utilities - New Hampshire' }, { value: 'fge', text: 'FG&E' },
-                    { value: 'gsgt', text: 'GSGT' }, { value: 'unh_eco', text: 'UNH-ECO-Line' },
+                    { value: "", text: "Select DOC..." },
+                    { value: "bng", text: "Bangor Natural Gas" },
+                    { value: "nu-me", text: "Northern Utilities - Maine" },
+                    { value: "nu-nh", text: "Northern Utilities - New Hampshire" },
+                    { value: "fge", text: "Fitchburg Gas and Electric" }
                 ]
             },
-            { label: 'Crossing Identification Number:', id: 'crossing-id', type: 'text', placeholder: 'e.g., ME-RIV-001', required: true },
-            { label: 'Description of Crossing/Work Location:', id: 'crossing-description', type: 'textarea', placeholder: 'Provide a brief description of the specific location, access points, or any immediate observations about the work area.' },
-            { label: 'GPS Latitude:', id: 'gps-lat', type: 'text', placeholder: 'e.g., 43.6591° N' },
-            { label: 'GPS Longitude:', id: 'gps-lon', type: 'text', placeholder: 'e.g., 70.2568° W' },
+            {
+                label: "Crossing Identification Number:",
+                id: "crossing-id",
+                type: "text",
+                placeholder: "e.g., BR-123, River St Bridge"
+            },
+            {
+                label: "Town/City:",
+                id: "town-city",
+                type: "text",
+                placeholder: "e.g., Hampton, NH"
+            },
+            {
+                label: "Description of Crossing/Work Location:",
+                id: "crossing-description",
+                type: "textarea",
+                placeholder: "Provide a brief description of the specific location, access points, or any immediate observations about the work area."
+            },
+            { label: "GPS Latitude:", id: "gps-lat", type: "text", placeholder: "e.g., 43.6591° N" },
+            { label: "GPS Longitude:", id: "gps-lon", type: "text", placeholder: "e.g., 70.2568° W" },
         ]
     },
     {
-        title: 'Bridge & Environmental Context',
-        id: 'section-bridge-environmental',
+        title: "Bridge & Environmental Context",
+        id: "bridge-context",
         fields: [
-            { label: 'Road Name:', id: 'road-name', type: 'text', placeholder: 'e.g., Main Street' },
-            { label: 'Feature Crossed:', id: 'feature-crossed', type: 'text', placeholder: 'e.g., Saco River, I-95' },
-            { label: 'Bridge Name:', id: 'bridge-name', type: 'text', placeholder: 'e.g., Main Street Bridge' },
-            { label: 'Bridge Number:', id: 'bridge-number', type: 'text', placeholder: 'e.g., B78-002' },
-            {
-                label: 'Bridge Type:', id: 'bridge-type', type: 'select', options: [
-                    { value: '', text: 'Select Bridge Type...' }, { value: 'girder', text: 'Girder (Steel or Concrete)' },
-                    { value: 'truss', text: 'Truss' }, { value: 'arch', text: 'Arch' },
-                    { value: 'suspension', text: 'Suspension' }, { value: 'culvert', text: 'Culvert' }, { value: 'other', text: 'Other' }
+            { label: "Road Name:", id: "road-name", type: "text", placeholder: "e.g., Main Street" },
+            { label: "Feature Crossed:", id: "feature-crossed", type: "text", placeholder: "e.g., Saco River, I-95" },
+            { label: "Bridge Name:", id: "bridge-name", type: "text", placeholder: "e.g., Main Street Bridge" },
+            { label: "Bridge Number:", id: "bridge-number", type: "text", placeholder: "e.g., B78-002" },
+            { 
+                label: "Bridge Type:",
+                id: "bridge-type",
+                type: "select",
+                options: [
+                    { value: "", text: "Select Bridge Type..." },
+                    { value: "girder", text: "Girder (Steel or Concrete)" },
+                    { value: "truss", text: "Truss" },
+                    { value: "arch", text: "Arch" },
+                    { value: "culvert", text: "Culvert" },
+                    { value: "other", text: "Other" }
                 ]
             },
-            {
-                label: 'Bridge Material:', id: 'bridge-material', type: 'select', options: [
-                    { value: '', text: 'Select Bridge Material...' }, { value: 'steel', text: 'Steel' },
-                    { value: 'concrete', text: 'Concrete (Reinforced or Prestressed)' }, { value: 'wood', text: 'Wood' },
-                    { value: 'composite', text: 'Composite (Steel & Concrete)' }, { value: 'masonry', text: 'Masonry' }, { value: 'other', text: 'Other' }
+            { 
+                label: "Bridge Material:",
+                id: "bridge-material",
+                type: "select",
+                options: [
+                    { value: "", text: "Select Bridge Material..." },
+                    { value: "steel", text: "Steel" },
+                    { value: "concrete", text: "Concrete" },
+                    { value: "wood", text: "Wood" },
+                    { value: "composite", text: "Composite" },
+                    { value: "other", text: "Other" }
                 ]
             },
-            { label: 'Ambient Temperature at time of inspection (°F):', id: 'ambient-temp', type: 'number', placeholder: 'e.g., 65' },
-            { label: 'General Weather Conditions:', id: 'weather-conditions', type: 'textarea', placeholder: 'e.g., Sunny and clear, Overcast, Light rain' },
-            { label: 'Vegetation Growth Around Pipeline/Supports:', id: 'vegetation-growth', type: 'textarea', placeholder: 'Describe vegetation, e.g., None, Minor, Overgrown, Trees/Roots impacting.' },
-            { label: 'Evidence of Scour or Erosion Near Supports/Pipeline:', id: 'scour-erosion', type: 'textarea', placeholder: 'Describe any scour or erosion observed.' },
-            { label: 'Proximity to Water Body/Wetlands:', id: 'proximity-water', type: 'textarea', placeholder: 'Describe proximity and potential impact.' },
-            { label: 'Signs of Debris Accumulation Around Pipeline/Supports:', id: 'debris-accumulation', type: 'textarea', placeholder: 'Describe any debris build-up.' },
+            { label: "Ambient Temperature at time of inspection (°F):", id: "ambient-temp", type: "number", placeholder: "e.g., 65" },
+            { label: "General Weather Conditions:", id: "weather-conditions", type: "textarea", placeholder: "e.g., Sunny and clear, Overcast, Light rain" },
+            { label: "Vegetation Growth Around Pipeline/Supports:", id: "vegetation-growth", type: "textarea", placeholder: "Describe vegetation, e.g., None, Minor, Overgrown, Trees/Roots impacting." },
+            { label: "Evidence of Scour or Erosion Near Supports/Pipeline:", id: "scour-erosion", type: "textarea", placeholder: "Describe any scour or erosion observed." },
+            { label: "Proximity to Water Body/Wetlands:", id: "proximity-water", type: "textarea", placeholder: "Describe proximity and any potential interaction." },
+            { label: "Signs of Debris Accumulation Around Pipeline/Supports:", id: "debris-accumulation", type: "textarea", placeholder: "Describe any debris (logs, ice, trash) observed." }
         ]
     },
     {
-        title: 'Pipeline Identification & Specifications',
-        id: 'section-pipeline-details',
+        title: "Pipeline Identification & Specifications",
+        id: "pipe-specs",
         fields: [
             {
-                label: 'Pipeline Material:', id: 'pipeline-material', type: 'select', required: true,
+                label: "System Name",
+                id: "bng-system-select",
+                type: "select",
+                options: bngSystems,
+                containerId: 'bng-system-select-container'
+            },
+            {
+                label: "System Name",
+                id: "nu-me-system-select",
+                type: "select",
+                options: nuMeSystems,
+                containerId: 'nu-me-system-select-container'
+            },
+            {
+                label: "System Name",
+                id: "nu-nh-system-select",
+                type: "select",
+                options: nuNhSystems,
+                containerId: 'nu-nh-system-select-container'
+            },
+            {
+                label: "System Name",
+                id: "fge-system-select",
+                type: "select",
+                options: fgeSystems,
+                containerId: 'fge-system-select-container'
+            },
+            { label: "MAOP (PSIG):", id: "maop", type: "number", placeholder: "Max. Allowable Operating Pressure" },
+            { label: "Pipe Diameter (inches):", id: "pipe-diameter", type: "number", placeholder: "e.g., 4, 8, 12" },
+            { label: "Wall Thickness (inches):", id: "wall-thickness", type: "number", placeholder: "e.g., 0.250" },
+            {
+                label: "Pipe Material:",
+                id: "pipe-material",
+                type: "select",
                 options: [
-                    { value: '', text: 'Select Material...' }, { value: 'steel_pipe', text: 'Steel Pipe' },
-                    { value: 'steel_pipe_casing', text: 'Steel Pipe in casing' }, { value: 'plastic_pipe_casing', text: 'Plastic pipe in casing' },
+                    { value: "", text: "Select Material..." },
+                    { value: "steel", text: "Steel" },
+                    { value: "plastic", text: "Plastic (PE)" },
+                    { value: "cast_iron", text: "Cast Iron" },
+                    { value: "other", text: "Other" }
                 ]
             },
             {
-                label: 'Pipeline Diameter (inches):', id: 'pipeline-diameter', type: 'select', required: true,
-                options: [
-                    { value: '', text: 'Select Diameter...' }, { value: '2', text: '2"' }, { value: '3', text: '3"' },
-                    { value: '4', text: '4"' }, { value: '6', text: '6"' }, { value: '8', text: '8"' },
-                    { value: '10', text: '10"' }, { value: '12', text: '12"' }, { value: 'other', text: 'Other (Specify)'},
-                ]
-            },
-            { label: 'Other Pipeline Diameter (Specify):', id: 'pipeline-diameter-other', type: 'text', placeholder: 'Specify other diameter' },
-            {
-                label: 'Pipe Wall Thickness (Inches):',
-                id: 'pipe-wall-thickness',
-                type: 'number',
-                placeholder: 'e.g., 0.280',
-                assessmentOptions: ["Measured", "Stamped on Pipe", "Obtained from records"]
-            },
-            {
-                label: 'Installation Temperature (In Deg F.):',
-                id: 'installation-temp',
-                type: 'number',
-                placeholder: 'e.g., 55',
+                label: "Installation Temperature (In Deg F.):",
+                id: "installation-temp",
+                type: "number",
+                placeholder: "e.g., 55",
                 assessmentOptions: ["Assumed", "Documented in Original Installation Records", "Derived from historical temperatures based on installation date"]
             },
-            {
-                label: 'System (Bangor Natural Gas):', id: 'bng-system-select', containerId: 'bng-system-select-container',
-                type: 'select', options: [{ value: '', text: 'Select System for Bangor Natural Gas...' }],
-            },
-            {
-                label: 'System (NU Maine):', id: 'nu-me-system-select', containerId: 'nu-me-system-select-container',
-                type: 'select', options: [{ value: '', text: 'Select System for NU Maine...' }],
-            },
-            {
-                label: 'System (NU New Hampshire):', id: 'nu-nh-system-select', containerId: 'nu-nh-system-select-container',
-                type: 'select', options: [{ value: '', text: 'Select System for NU New Hampshire...' }],
-            },
-            {
-                label: 'System (FG&E):', id: 'fge-system-select', containerId: 'fge-system-select-container',
-                type: 'select', options: [{ value: '', text: 'Select System for FG&E...' }],
-            },
-            {
-                label: 'MAOP Unit:', id: 'maop-unit', type: 'select', required: true,
-                options: [
-                    { value: '', text: 'Select Unit...' }, { value: 'psig', text: 'PSIG' }, { value: 'wc', text: 'inches W.C.' }
-                ]
-            },
-            { label: 'MAOP Value:', id: 'maop-value', type: 'number', placeholder: 'Enter MAOP Value', required: true }
         ]
     },
     {
-        title: 'Pipeline Support & Anchorage System',
-        id: 'section-pipeline-support',
+        title: "Pipeline Support System",
+        id: "support-system",
         fields: [
             {
-                label: 'Pipeline Support Method(s):', id: 'pipeline-support-methods', type: 'checkbox-group',
+                label: "Primary Support Method:",
+                id: "support-method",
+                type: "select",
+                options: [
+                    { value: "", text: "Select Support Method..." },
+                    { value: "hangers", text: "Hangers from Bridge Structure" },
+                    { value: "rollers", text: "Roller Supports on Piers/Abutments" },
+                    { value: "saddles", text: "Saddle Supports on Piers/Abutments" },
+                    { value: "brackets", text: "Brackets Attached to Bridge Deck/Girders" },
+                    { value: "self-supporting", text: "Self-Supporting Span (e.g., dedicated pipe bridge)" },
+                    { value: "other", text: "Other (Specify Below)" }
+                ]
+            },
+            { label: "Specify Other Support Method:", id: "other-support-specify", type: "textarea", placeholder: "Describe if 'Other' was selected." },
+            { label: "Comments on Support Condition (Thermal Stress):", id: "support-condition-thermal-stress-comments", type: "textarea", placeholder: "Note any signs of thermal stress, such as bent supports or strained connections." },
+            { label: "Comments on Pipe Movement/Restriction at Supports:", id: "pipe-movement-at-supports-comments", type: "textarea", placeholder: "Assess if the pipe is free to move as designed or if it is unduly restricted." },
+            { label: "Comments on Sliding/Roller Support Functionality:", id: "sliding-roller-functionality-comments", type: "textarea", placeholder: "Check for proper lubrication, seizure, or debris impeding movement on sliding/roller supports." },
+            { label: "Comments on Pipeline Support & Attachment (General):", id: "support-comments", type: "textarea", placeholder: "General condition of hangers, U-bolts, clamps, welds, and fasteners." }
+        ]
+    },
+    {
+        title: "Expansion/Contraction Provisions",
+        id: "expansion-provisions",
+        fields: [
+            {
+                label: "Primary Expansion/Contraction Feature:",
+                id: "expansion-feature",
+                type: "select",
+                options: [
+                    { value: "", text: "Select Expansion Feature..." },
+                    { value: "expansion_loop", text: "Expansion Loop" },
+                    { value: "expansion_joint", text: "Expansion Joint (e.g., bellows, slip-type)" },
+                    { value: "pipe_flexibility", text: "Designed Pipe Flexibility (offsets, bends)" },
+                    { value: "none", text: "None Observed" },
+                    { value: "other", text: "Other (Specify Below)" }
+                ]
+            },
+            { label: "Specify Other Expansion Feature:", id: "other-expansion-specify", type: "textarea", placeholder: "Describe if 'Other' was selected." },
+            { label: "Comments on Expansion Feature Functionality:", id: "expansion-feature-functionality-comments", type: "textarea", placeholder: "Assess if the feature is functioning as intended (e.g., loop is not restrained, joint is not seized)." },
+            { label: "Comments on Expansion/Contraction Accommodation (General):", id: "expansion-comments", type: "textarea", placeholder: "Overall assessment of how thermal movement is managed across the crossing." }
+        ]
+    },
+    {
+        title: "Coating and Corrosion Control",
+        id: "corrosion-control",
+        fields: [
+            {
+                label: "Coating Type:",
+                id: "coating-type",
+                type: "select",
+                options: [
+                    { value: "", text: "Select Coating Type..." },
+                    { value: "fbe", text: "Fusion Bonded Epoxy (FBE)" },
+                    { value: "liquid_epoxy", text: "Liquid Epoxy" },
+                    { value: "tape_wrap", text: "Tape Wrap (e.g., Polyken, Powercrete)" },
+                    { value: "three_layer", text: "Three-Layer Polyethylene/Polypropylene (3LPE/3LPP)" },
+                    { value: "none", text: "None / Uncoated" },
+                    { value: "unknown", text: "Unknown" },
+                    { value: "other", text: "Other (Specify Below)" }
+                ]
+            },
+            { label: "Specify Other Coating Type:", id: "other-coating-type-specify", type: "textarea", placeholder: "Describe if 'Other' was selected." },
+            { label: "Comments on Coating:", id: "coating-comments", type: "textarea", placeholder: "Describe condition: holidays, disbondment, mechanical damage, UV degradation." },
+            {
+                label: "Cathodic Protection (CP):",
+                id: "cp-present",
+                type: "radio-group",
                 checkboxOptions: [
-                    { value: 'ring_girders', text: 'Ring Girders/Supports (Clamped to pipe)' }, { value: 'hangers_rods', text: 'Hangers/Rods (Suspended)' },
-                    { value: 'rollers_sliding', text: 'Rollers/Sliding Supports' }, { value: 'stanchions_pedestals', text: 'Stanchions/Pedestals (Supported from below)' },
-                    { value: 'trough_gallery', text: 'Contained within dedicated trough/gallery' }, { value: 'direct_attach', text: 'Directly Welded/Bolted to Bridge Members' },
-                    { value: 'u_bolts', text: 'U-Bolts' }, { value: 'sleeved_cased_abutment_deck', text: 'Sleeved/Cased through Abutment/Deck' },
-                    { value: 'guides', text: 'Guides (Restrict lateral movement)' }, { value: 'anchors', text: 'Anchors (Restrict all movement)' },
-                    { value: 'other_support', text: 'Other' }
+                    { value: "yes", text: "CP is present" },
+                    { value: "no", text: "CP is not present" },
+                    { value: "unknown", text: "Unknown" }
                 ]
             },
-            { label: 'Specify Other Support Method:', id: 'other-support-specify', type: 'textarea', placeholder: 'Describe other support method' },
             {
-                label: 'Observed Condition of Supports/Anchors in Relation to Thermal Stress:', id: 'support-condition-thermal-stress', type: 'select',
-                options: [
-                    { value: '', text: 'Select Condition...' }, { value: 'no_stress_damage', text: 'No visible stress/damage' },
-                    { value: 'minor_stress_wear', text: 'Minor stress/wear' }, { value: 'significant_stress_damage', text: 'Significant stress/damage' },
-                    { value: 'unable_to_assess_support_stress', text: 'Unable to Assess' }
-                ]
-            },
-            { label: 'Comments on Support Condition (Thermal Stress):', id: 'support-condition-thermal-stress-comments', type: 'textarea', placeholder: 'Detail observations...' },
-            {
-                label: 'Evidence of Unintended Pipe Movement or Restriction at Supports:', id: 'pipe-movement-at-supports', type: 'select',
-                options: [
-                    { value: '', text: 'Select Observation...' }, { value: 'correctly_positioned', text: 'Pipe appears correctly positioned' },
-                    { value: 'shifted', text: 'Pipe visibly shifted' }, { value: 'hard_against_guides', text: 'Pipe hard against guide stops' },
-                    { value: 'rubbing_fretting', text: 'Evidence of excessive rubbing/fretting' }, { value: 'disengaged', text: 'Pipe disengaged from support(s)' },
-                    { value: 'unable_to_assess_pipe_movement', text: 'Unable to Assess' }
-                ]
-            },
-            { label: 'Comments on Pipe Movement/Restriction at Supports:', id: 'pipe-movement-at-supports-comments', type: 'textarea', placeholder: 'Detail observations...' },
-            {
-                label: 'For Sliding Supports or Rollers: Functionality Assessment', id: 'sliding-roller-functionality', type: 'select',
-                options: [
-                    { value: '', text: 'Select Functionality...' }, { value: 'functional_free_move', text: 'Appears functional / free to move' },
-                    { value: 'signs_binding_seizure', text: 'Signs of binding / seizure / corrosion' }, { value: 'obstructed_debris_components', text: 'Obstructed by debris/components' },
-                    { value: 'na_no_sliding_roller', text: 'Not Applicable' }, { value: 'unable_to_assess_functionality', text: 'Unable to Assess' }
-                ]
-            },
-            { label: 'Comments on Sliding/Roller Support Functionality:', id: 'sliding-roller-functionality-comments', type: 'textarea', placeholder: 'Detail observations...' },
-            { label: 'Comments on Pipeline Support & Attachment (General):', id: 'support-comments', type: 'textarea', placeholder: 'General observations about supports, attachments, etc.' }
-        ]
-    },
-    {
-        title: 'Thermal Expansion & Movement Accommodation',
-        id: 'section-pipeline-expansion',
-        fields: [
-            {
-                label: 'Expansion/Contraction Accommodation Feature(s):', id: 'pipeline-expansion-features', type: 'checkbox-group',
+                label: "Test Station Found?",
+                id: "cp-test-station",
+                type: "radio-group",
                 checkboxOptions: [
-                    { value: 'expansion_loops', text: 'Expansion Loops (U-bends or L-bends)' }, { value: 'expansion_joints', text: 'Expansion Joints (bellows, slip-type)' },
-                    { value: 'flexible_connectors', text: 'Flexible Connectors/Hoses' }, { value: 'designed_slack', text: 'Designed Slack or Offsets' },
-                    { value: 'none_observed', text: 'None Observed' }, { value: 'unable_to_determine', text: 'Unable to Determine' },
-                    { value: 'other_expansion', text: 'Other' }
+                    { value: "yes", text: "Yes" },
+                    { value: "no", text: "No" },
+                    { value: "na", text: "N/A" }
                 ]
             },
-            { label: 'Specify Other Expansion Feature:', id: 'other-expansion-specify', type: 'textarea', placeholder: 'Describe other expansion feature' },
+            { label: "Pipe-to-Soil Potential Reading (mV):", id: "cp-potential", type: "number", placeholder: "e.g., -950" },
+            { label: "Comments on Cathodic Protection:", id: "cp-comments", type: "textarea", placeholder: "Describe condition of test stations, wires, and any observed issues." }
+        ]
+    },
+    {
+        title: "Pipe Condition Assessment",
+        id: "pipe-condition",
+        fields: [
+            { label: "Evidence of Physical Damage to Pipe (dents, gouges, etc.):", id: "pipe-physical-damage", type: "textarea", placeholder: "Describe location, size, and severity of any physical damage found." },
+            { label: "Atmospheric Corrosion: Extent and Severity (if steel pipe exposed):", id: "atmospheric-corrosion-details", type: "textarea", placeholder: "Describe any atmospheric corrosion, classifying as light, moderate, or severe." }
+        ]
+    },
+    {
+        title: "Clearances and Measurements",
+        id: "clearances",
+        fields: [
             {
-                label: 'Observed Functionality of Expansion Joints/Loops (if present):', id: 'expansion-feature-functionality', type: 'select',
+                label: "Clearance Checks:",
+                id: "clearance-checks",
+                type: "checkbox-group",
+                checkboxOptions: [
+                    { value: "vertical-hwy", text: "Vertical clearance from highway/roadway" },
+                    { value: "horizontal-hwy", text: "Horizontal clearance from highway/roadway" },
+                    { value: "vertical-water", text: "Vertical clearance from high water mark" },
+                    { value: "horizontal-abutment", text: "Horizontal clearance from bridge abutments" }
+                ]
+            },
+            { label: "Comments on Clearances and Measurements:", id: "clearance-comments", type: "textarea", placeholder: "Record actual measurements and note any deficiencies." }
+        ]
+    },
+    {
+        title: "Access and Safety",
+        id: "access-safety",
+        fields: [
+            { label: "Safety Hazards Noted (e.g., traffic, fall hazards, confined space):", id: "safety-hazards", type: "textarea", placeholder: "Describe any safety hazards observed during the assessment." },
+            { label: "Condition of Access Structures (ladders, walkways, etc.):", id: "access-structures-condition", type: "textarea", placeholder: "Describe the condition of any structures used to access the pipeline." },
+            { label: "Comments on Access & Safety:", id: "access-safety-comments", type: "textarea", placeholder: "General comments on accessibility for inspection and maintenance." }
+        ]
+    },
+    {
+        title: "Documentation",
+        id: "documentation",
+        fields: [
+            {
+                label: "Upload Photographs/Sketches:",
+                id: "photographs",
+                type: "file",
+                multiple: true,
+                accept: "image/jpeg,image/png,image/tiff"
+            },
+            {
+                label: "Upload Other Documents (e.g., Installation Records):",
+                id: "other-docs",
+                type: "file",
+                multiple: true,
+                accept: "image/jpeg,image/png,image/tiff"
+            }
+        ]
+    },
+    {
+        title: "Third-Party Infrastructure and General Observations",
+        id: "third-party",
+        fields: [
+            { label: "Other Utilities or Structures Attached to/Near Bridge:", id: "other-utilities-bridge", type: "textarea", placeholder: "Describe any other utilities (electric, water, telecom) or structures present." },
+            { label: "Observed Condition of Bridge Structure (General):", id: "bridge-structure-condition", type: "textarea", placeholder: "Note any significant deterioration, damage, or concerns about the bridge itself." },
+            { label: "Potential for Third-Party Damage to Pipeline:", id: "third-party-damage-potential", type: "textarea", placeholder: "Assess potential for damage from traffic, mowers, or other activities." },
+            { label: "Comments on Third-Party Infrastructure:", id: "third-party-comments", type: "textarea", placeholder: "General comments on the condition and proximity of other infrastructure." }
+        ]
+    },
+    {
+        title: "Recommendations and Final Evaluation",
+        id: "recommendations",
+        fields: [
+            { label: "Any Immediate Hazards Identified (requiring urgent attention):", id: "immediate-hazards", type: "textarea", placeholder: "Describe any conditions that pose an immediate risk." },
+            { label: "Actions Taken/Notification Made (if any immediate hazards):", id: "actions-taken-hazards", type: "textarea", placeholder: "Detail any on-the-spot actions or notifications made." },
+            {
+                label: "Recommendation Priority:",
+                id: "recommendation-priority",
+                type: "select",
                 options: [
-                    { value: '', text: 'Select Functionality...' }, { value: 'functional_good_condition', text: 'Functional and in good condition' },
-                    { value: 'seized_stuck', text: 'Signs of being seized/stuck' }, { value: 'leaking', text: 'Leaking (if applicable)' },
-                    { value: 'over_extended_compressed', text: 'Visibly over-extended/compressed' }, { value: 'damaged_components', text: 'Damaged components' },
-                    { value: 'na_expansion_feature', text: 'Not Applicable' }, { value: 'unable_to_assess_expansion_functionality', text: 'Unable to Assess' }
+                    { value: "", text: "Select Priority Level..." },
+                    { value: "immediate", text: "Immediate (within 24 hours)" },
+                    { value: "high", text: "High (within 1 month)" },
+                    { value: "medium", text: "Medium (within 6 months)" },
+                    { value: "low", text: "Low (within 1 year / next inspection cycle)" }
                 ]
             },
-            { label: 'Comments on Expansion Feature Functionality:', id: 'expansion-feature-functionality-comments', type: 'textarea', placeholder: 'Detail observations...' },
-            { label: 'Comments on Expansion/Contraction Accommodation (General):', id: 'expansion-comments', type: 'textarea', placeholder: 'General observations on expansion features.' }
-        ]
-    },
-    {
-        title: 'Pipeline Condition & Coating Assessment',
-        id: 'section-pipeline-condition',
-        fields: [
-            {
-                label: 'Visible External Corrosion:', id: 'external-corrosion', type: 'select', required: true,
-                options: [
-                    { value: '', text: 'Select Corrosion Level...' }, { value: 'none', text: 'No Visible External Corrosion' },
-                    { value: 'minor', text: 'Minor Surface Corrosion / Discoloration' }, { value: 'moderate', text: 'Moderate Corrosion' },
-                    { value: 'severe', text: 'Severe Corrosion' }, { value: 'unable_to_assess', text: 'Unable to Assess' }
-                ]
-            },
-            {
-                label: 'Coating Type:', id: 'coating-type', type: 'select',
-                options: [ 
-                    { value: '', text: 'Select Coating Type...' }, { value: 'fbe', text: 'FBE' },
-                    { value: 'wax_tape', text: 'Wax Tape' }, { value: 'pritech', text: 'Pritech' },
-                    { value: 'x_tru_coat', text: 'X-Tru-Coat' }, { value: 'other_coating', text: 'Other' }
-                ],
-                defaultValue: '' 
-            },
-            { label: 'Specify Other Coating Type:', id: 'other-coating-type-specify', type: 'textarea', placeholder: 'Describe other coating type' },
-            {
-                label: 'Visible Coating Condition:', id: 'coating-condition', type: 'select',
-                options: [
-                    { value: '', text: 'Select Coating Condition...' }, { value: 'good', text: 'Good (Intact, well-adhered)' },
-                    { value: 'fair', text: 'Fair (Minor abrasions/scratches)' }, { value: 'poor', text: 'Poor (Damage, disbondment, peeling)' },
-                    { value: 'unable_to_assess_coating_condition', text: 'Unable to Assess' }
-                ]
-            },
-            { label: 'Comments on Coating:', id: 'coating-comments', type: 'textarea', placeholder: 'Specific observations about pipeline coating.' },
-            {
-                label: 'Test Station Found and Accessible?', id: 'test-station-accessible', type: 'select',
-                options: [ { value: '', text: 'Select...' }, { value: 'yes', text: 'Yes' }, { value: 'no', text: 'No' }, { value: 'na', text: 'Not Applicable' }]
-            },
-            { label: 'Pipe-to-Soil Potential Reading (mV):', id: 'pipe-to-soil-potential', type: 'number', placeholder: 'e.g., -950' },
-            { label: 'Comments on Cathodic Protection:', id: 'cp-comments', type: 'textarea', placeholder: 'e.g., Location, type, condition of test station. Insulator condition.' },
-            { label: 'Evidence of Physical Damage to Pipe (dents, gouges, etc.):', id: 'pipe-physical-damage', type: 'textarea', placeholder: 'Describe any physical damage observed.' },
-            { label: 'Atmospheric Corrosion: Extent and Severity (if steel pipe exposed):', id: 'atmospheric-corrosion-details', type: 'textarea', placeholder: 'Describe atmospheric corrosion details.' }
-        ]
-    },
-    {
-        title: 'Pipe Clearances & Measurements',
-        id: 'section-clearances',
-        fields: [
-            { label: 'Vertical Clearance - Pipe to Bridge Deck/Structure Above (ft):', id: 'clearance-vertical-above', type: 'number', placeholder: 'e.g., 2.5', assessmentOptions: ["Measured", "Estimated", "Could not Assess"] },
-            { label: 'Vertical Clearance - Pipe to Water/Ground/Obstruction Below (ft):', id: 'clearance-vertical-below', type: 'number', placeholder: 'e.g., 10.0', assessmentOptions: ["Measured", "Estimated", "Could not Assess"] },
-            { label: 'Horizontal Clearance - Pipe to Bridge Abutment/Pier (ft):', id: 'clearance-horizontal-abutment', type: 'number', placeholder: 'e.g., 1.0', assessmentOptions: ["Measured", "Estimated", "Could not Assess"] },
-            { label: 'Horizontal Clearance - Pipe to other Utilities/Structures (ft):', id: 'clearance-horizontal-other', type: 'number', placeholder: 'e.g., 3.0', assessmentOptions: ["Measured", "Estimated", "Could not Assess"] },
-            { label: 'Comments on Clearances and Measurements:', id: 'clearance-comments', type: 'textarea', placeholder: 'Any specific observations or concerns about clearances.' }
-        ]
-    },
-    {
-        title: 'Access & Safety',
-        id: 'section-access-safety',
-        fields: [
-            { label: 'Accessibility for Inspection/Maintenance:', id: 'accessibility-inspection', type: 'select', options: [{value: '', text: 'Select...'}, {value: 'good', text: 'Good'}, {value: 'fair', text: 'Fair'}, {value: 'poor', text: 'Poor (requires special equipment/permits)'}, {value: 'restricted', text: 'Restricted/Hazardous'}]},
-            { label: 'Safety Hazards Noted (e.g., traffic, fall hazards, confined space):', id: 'safety-hazards', type: 'textarea', placeholder: 'Describe any safety hazards.' },
-            { label: 'Condition of Access Structures (ladders, walkways, etc.):', id: 'access-structures-condition', type: 'textarea', placeholder: 'Describe condition if applicable.' },
-            { label: 'Comments on Access & Safety:', id: 'access-safety-comments', type: 'textarea', placeholder: 'Other access or safety related observations.' }
-        ]
-    },
-    {
-        title: 'Photographs & Attachments',
-        id: 'section-photos',
-        fields: [
-            { label: 'Photographs Taken (list or describe):', id: 'photographs-taken', type: 'textarea', placeholder: 'e.g., Overall crossing, support details, coating damage, clearance issues.' },
-            { label: 'Installation Records (Images Only):', id: 'installation-records', type: 'file', multiple: true, accept: 'image/jpeg,image/png,image/tiff' },
-            { label: 'Upload Photographs/Sketches:', id: 'file-attachments', type: 'file', multiple: true, accept: 'image/jpeg,image/png,image/tiff' }
-        ]
-    },
-    {
-        title: 'Third-Party Infrastructure & Proximity',
-        id: 'section-third-party',
-        fields: [
-            { label: 'Other Utilities or Structures Attached to/Near Bridge:', id: 'other-utilities-bridge', type: 'textarea', placeholder: 'Describe type and proximity (e.g., electrical conduits, telecom cables, water lines).' },
-            { label: 'Observed Condition of Bridge Structure (General):', id: 'bridge-structure-condition', type: 'textarea', placeholder: 'General observations on bridge condition (e.g., spalling concrete, rust on steel members, deck condition).' },
-            { label: 'Potential for Third-Party Damage to Pipeline:', id: 'third-party-damage-potential', type: 'textarea', placeholder: 'Describe any activities or conditions that could pose a risk.' },
-            { label: 'Comments on Third-Party Infrastructure:', id: 'third-party-comments', type: 'textarea', placeholder: 'Additional observations.' }
-        ]
-    },
-    {
-        title: 'Immediate Hazards or Concerns Noted',
-        id: 'section-hazards',
-        fields: [
-            { label: 'Any Immediate Hazards Identified (requiring urgent attention):', id: 'immediate-hazards', type: 'textarea', placeholder: 'Describe any severe corrosion, critical support failure, leaks, imminent third-party damage risk, etc.' },
-            { label: 'Actions Taken/Notification Made (if any immediate hazards):', id: 'actions-taken-hazards', type: 'textarea', placeholder: 'Detail actions or notifications.' }
-        ]
-    },
-    {
-        title: 'Recommendations',
-        id: 'section-recommendations',
-        fields: [
-            {
-                label: 'Recommended Actions:',
-                id: 'recommendation-actions',
-                type: 'radio-group',
-                checkboxOptions: [ 
-                    { value: 'no_action', text: 'No immediate action required - Continue routine monitoring.' },
-                    { value: 'monitor_re_evaluate', text: 'Monitor specific concern(s) and re-evaluate in [X] months/years.' },
-                    { value: 'further_inspection_ndt', text: 'Further detailed inspection required (e.g., NDT, coating survey).' },
-                    { value: 'coating_repair', text: 'Coating repair needed.' },
-                    { value: 'support_repair_adjustment', text: 'Pipeline support repair or adjustment required.' },
-                    { value: 'vegetation_management', text: 'Vegetation management required.' },
-                    { value: 'debris_removal', text: 'Debris removal around pipe/supports required.' },
-                    { value: 'address_clearance', text: 'Address clearance issue(s).' },
-                    { value: 'address_access_safety', text: 'Address access/safety concern(s).' },
-                    { value: 'consult_structural_engineer', text: 'Consult with bridge owner / structural engineer regarding bridge condition.' },
-                    { value: 'other_recommendation', text: 'Other (Specify in summary)' }
-                ]
-            },
-             {
-                label: 'Recommendation Priority:', id: 'recommendation-priority', type: 'select', required: true,
-                options: [
-                    { value: '', text: 'Select Priority...' }, { value: 'immediate', text: 'Immediate (Within 7 days)' },
-                    { value: 'high', text: 'High (Within 30 days)' }, { value: 'medium', text: 'Medium (Within 90 days)' },
-                    { value: 'low', text: 'Low (Within 1 year)' }, { value: 'monitor', text: 'Monitor (Next scheduled inspection)' }
-                ]
-            },
-            { label: 'Summary of Recommendations / Specify "Other" / Timeline:', id: 'recommendations-summary', type: 'textarea', placeholder: 'Detail the recommended actions, specify if "Other" was selected, and provide timeline for actions.' },
-            { label: 'Final Summary of Evaluation:', id: 'final-summary-evaluation', type: 'textarea', placeholder: 'Provide an overall summary of the pipeline crossing condition and assessment findings.' }
+            { label: "Summary of Recommendations / Specify \"Other\" / Timeline:", id: "recommendations-summary", type: "textarea", placeholder: "List specific, actionable recommendations." },
+            { label: "Final Summary of Evaluation:", id: "final-summary-evaluation", type: "textarea", placeholder: "Provide an overall summary of the crossing's condition." }
         ]
     }
 ];
 
+// --- Gets all form data in a structured way ---
+function getFormData() {
+    const formData: { [key: string]: any } = {};
+    formSections.forEach(section => {
+        section.fields.forEach(field => {
+            if (field.type === 'file' || field.containerId) return;
 
-function renderForm() {
-    const form = document.getElementById('assessment-form') as HTMLFormElement;
-    if (!form) {
-        console.error('Assessment form element not found!');
-        return;
-    }
-    form.innerHTML = ''; // Clear previous form content if any
-
-    allFormSections.forEach((sectionData, index) => {
-        form.appendChild(createSectionElement(sectionData.title, sectionData.id, sectionData.fields, index + 1));
-    });
-}
-
-
-function populateProcessGuidelines() {
-    const container = document.getElementById('process-guidelines-container');
-    if (!container) return;
-
-    container.innerHTML = `
-        <h2>Pipeline Bridge Crossing Assessment: Process Guidelines</h2>
-        <p>This document outlines the standard process for conducting a natural gas pipeline bridge crossing assessment using the provided form. Adherence to these guidelines ensures comprehensive and consistent evaluations.</p>
-        
-        <h3>I. Pre-Assessment Preparation</h3>
-        <ul>
-            <li><strong>Review Documentation:</strong> Gather and review existing records for the crossing. This includes as-built drawings, previous inspection reports, MAOP records, material specifications, and any history of repairs or issues.</li>
-            <li><strong>Tools & Equipment:</strong> Ensure all necessary tools and equipment are available and in good working order. This may include:
-                <ul>
-                    <li>Personal Protective Equipment (PPE) as required (hard hat, safety glasses, gloves, high-visibility vest, safety footwear).</li>
-                    <li>Measurement tools (tape measure, calipers, depth gauge for corrosion if applicable).</li>
-                    <li>Camera for photographic documentation.</li>
-                    <li>Flashlight or headlamp for poorly lit areas.</li>
-                    <li>Binoculars for inspecting hard-to-reach areas.</li>
-                    <li>Coating holiday detector (if required and trained).</li>
-                    <li>GPS device or smartphone with GPS capabilities.</li>
-                    <li>This assessment form (digital or printed).</li>
-                    <li>Note-taking materials.</li>
-                </ul>
-            </li>
-            <li><strong>Site Access & Permissions:</strong> Confirm access permissions to the bridge and surrounding areas. Coordinate with bridge owners (e.g., DOT, railway) or property owners if necessary. Identify any specific access procedures or safety requirements for the location.</li>
-            <li><strong>Safety Briefing:</strong> Conduct or attend a pre-job safety briefing to discuss potential hazards (traffic, working at heights, environmental conditions, wildlife, etc.) and mitigation measures. Ensure emergency contact information is available.</li>
-        </ul>
-
-        <h3>II. On-Site Assessment (Corresponds to Form Sections)</h3>
-        
-        <h4>Section 1: General Site & Crossing Information</h4>
-        <ul>
-            <li>Accurately record the date of assessment and the name(s) of the assessor(s).</li>
-            <li>Select the correct District Operating Center (DOC) from the dropdown list.</li>
-            <li>Provide a detailed description of the crossing and work location, including landmarks, access points, and any initial visual observations that help identify the specific site.</li>
-            <li>Record the unique Crossing Identification Number. If not available, consult records or assign as per company procedure.</li>
-            <li>Document the Bridge Name and Bridge Number (if available from bridge owner or signage).</li>
-            <li>Record the Road Name that utilizes the bridge and the Feature Crossed (e.g., river name, highway number, railway line).</li>
-            <li>Obtain and record accurate GPS Latitude and Longitude coordinates for the pipeline crossing, preferably at the approximate center or a defined reference point on the crossing.</li>
-        </ul>
-
-        <h4>Section 2: Pipeline Identification & Specifications</h4>
-        <ul>
-            <li>Identify and record the pipeline material (e.g., Steel Pipe, Steel Pipe in casing, Plastic pipe in casing).</li>
-            <li>Select the nominal Pipeline Diameter. If "Other," specify the diameter in the provided text field.</li>
-            <li>Record the Pipe Wall Thickness and select the method used to determine it (e.g., Measured, from Records).</li>
-            <li>Enter the estimated or known Installation Temperature in degrees Fahrenheit and select how this value was determined (e.g., Assumed, from Records, from historical data).</li>
-            <li>If the DOC selected has predefined systems (e.g., "Northern Utilities - Maine," "Northern Utilities - New Hampshire," "FG&E"), select the appropriate system from its specific dropdown. This will auto-populate the MAOP.</li>
-            <li>For other DOCs, or if overriding, manually select the unit for Maximum Allowable Operating Pressure (MAOP) (PSIG or inches W.C.).</li>
-            <li>For other DOCs, or if overriding, manually record the MAOP Value.</li>
-        </ul>
-
-        <h4>Section 3: Pipeline Support & Anchorage System</h4>
-        <ul>
-            <li>Carefully observe and select all applicable pipeline support methods used at the crossing.</li>
-            <li>If "Other" support method is selected, provide a specific description.</li>
-            <li>Assess the condition of supports and anchors, specifically looking for signs of stress or damage due to thermal expansion/contraction of the pipe or bridge. Select the appropriate condition.</li>
-            <li>Provide detailed comments on any observed stress or damage related to thermal effects on supports.</li>
-            <li>Look for evidence of unintended pipe movement (e.g., pipe shifted off supports, excessive gaps, wear marks) or restriction (e.g., pipe binding against supports). Select the observed condition.</li>
-            <li>Comment on any observed pipe movement or restriction, detailing locations and severity.</li>
-            <li>If sliding supports or rollers are present, assess their functionality. Check for freedom of movement, signs of binding, corrosion, or obstruction. Select the appropriate functionality.</li>
-            <li>Provide comments on the functionality of sliding/roller supports.</li>
-            <li>Include general comments on the overall condition, adequacy, and any concerns related to the pipeline support and attachment system.</li>
-        </ul>
-
-        <h4>Section 4: Thermal Expansion & Movement Accommodation</h4>
-        <ul>
-            <li>Identify any features designed to accommodate thermal expansion/contraction of the pipeline (e.g., expansion loops, expansion joints, flexible connectors, designed slack). Select all applicable features.</li>
-            <li>If "Other" expansion feature is selected, provide a specific description.</li>
-            <li>If expansion joints or loops are present, assess their observed functionality and condition (e.g., functional, seized, leaking, damaged). Select the appropriate condition.</li>
-            <li>Comment on the functionality and condition of any expansion features.</li>
-            <li>Provide general comments on the overall system for accommodating thermal expansion and contraction.</li>
-        </ul>
-
-        <h4>Section 5: Pipeline Condition & Coating Assessment</h4>
-        <ul>
-            <li>Visually inspect all accessible portions of the pipeline for external corrosion. Characterize the level of corrosion observed.</li>
-            <li>Identify and select the pipeline Coating Type. If "Other," specify the type.</li>
-            <li>Assess the visible condition of the pipeline coating (e.g., good, fair, poor with damage/disbondment). Select the appropriate condition.</li>
-            <li>Provide detailed comments on the coating, including locations of damage, type of damage (e.g., abrasion, disbondment, blistering), and estimated area affected.</li>
-            <li>Determine if Monolithic Insulator(s) are present. If yes, provide details on their location, type, visible condition, and any available test station readings.</li>
-            <li>Describe any observed physical damage to the pipe itself (e.g., dents, gouges, scrapes), noting location and approximate dimensions.</li>
-            <li>If steel pipe is exposed to the atmosphere, describe the extent and severity of any atmospheric corrosion.</li>
-        </ul>
-
-        <h4>Section 6: Pipe Clearances & Measurements</h4>
-        <ul>
-            <li>Measure and record critical clearances using the specified units (feet). For each measurement, indicate if it was "Measured," "Estimated," or "Could not Assess."
-                <ul>
-                    <li>Vertical Clearance from the pipe to the bridge deck or structure above.</li>
-                    <li>Vertical Clearance from the pipe to the water surface, ground, or any obstruction below.</li>
-                    <li>Horizontal Clearance from the pipe to bridge abutments or piers.</li>
-                    <li>Horizontal Clearance from the pipe to other utilities or structures.</li>
-                </ul>
-            </li>
-            <li>Provide comments on any clearance issues or concerns (e.g., insufficient clearance, potential for contact).</li>
-        </ul>
-
-        <h4>Section 7: Environmental Considerations</h4>
-        <ul>
-            <li>Observe and describe vegetation growth around the pipeline and its supports. Note if vegetation is overgrown, in contact with the pipe/coating, or if tree roots pose a threat.</li>
-            <li>Look for and describe any evidence of scour (erosion of soil/sediment) around pipeline supports or abutments, or erosion along banks near the pipeline.</li>
-            <li>Describe the pipeline's proximity to any water bodies or wetlands and any potential impact or risk (e.g., immersion, susceptibility to flooding).</li>
-            <li>Note any accumulation of debris (e.g., branches, trash, sediment) around the pipeline or supports that could impede inspection, restrict movement, or damage the coating.</li>
-            <li>Provide general comments on any other environmental conditions or concerns relevant to the pipeline crossing.</li>
-        </ul>
-
-        <h4>Section 8: Access & Safety</h4>
-        <ul>
-            <li>Assess the overall accessibility of the pipeline crossing for routine inspection and potential maintenance activities. Select the appropriate level of accessibility.</li>
-            <li>Identify and describe any safety hazards noted at the site (e.g., high-speed traffic, fall hazards, confined spaces, unstable ground, presence of hazardous materials).</li>
-            <li>If specific access structures (e.g., ladders, walkways, platforms) are present for the pipeline, describe their condition.</li>
-            <li>Provide general comments on any other access or safety-related observations or concerns.</li>
-        </ul>
-
-        <h4>Section 9: Photographs & Attachments</h4>
-        <ul>
-            <li>Keep a log or list key photographs taken during the assessment. Photos should document:
-                <ul>
-                    <li>Overall views of the crossing from different angles.</li>
-                    <li>Specific details of pipeline supports, anchors, and expansion features.</li>
-                    <li>Any observed corrosion, coating damage, or physical damage.</li>
-                    <li>Clearance issues.</li>
-                    <li>Environmental concerns (e.g., scour, vegetation).</li>
-                    <li>Access points and any safety hazards.</li>
-                </ul>
-            </li>
-            <li>Utilize the file upload feature to attach relevant photographs, sketches, or other supporting documents. Ensure file names are descriptive if possible.</li>
-            <li>For each file uploaded, add a concise, descriptive comment in the provided text box.</li>
-        </ul>
-
-        <h4>Section 10: Third-Party Infrastructure & Proximity</h4>
-        <ul>
-            <li>Identify and describe any other utilities (e.g., electrical conduits, telecom cables, water lines) or structures attached to or located near the bridge and in proximity to the pipeline. Note their type and relative location.</li>
-            <li>Provide general observations on the apparent condition of the bridge structure itself (e.g., spalling concrete, rust on steel members, condition of bridge deck or Expansion joints). This is a cursory observation, not a structural bridge inspection.</li>
-            <li>Describe any activities or conditions observed that could pose a potential risk of third-party damage to the pipeline (e.g., construction activity, heavy equipment movement, vandalism).</li>
-            <li>Provide additional comments on third-party infrastructure or related concerns.</li>
-        </ul>
-
-        <h4>Section 11: Immediate Hazards or Concerns Noted</h4>
-        <ul>
-            <li>Document any immediate hazards identified that require urgent attention. This could include severe corrosion with potential for leakage, critical support failure, observed leaks (gas or other), imminent risk of third-party damage, or any condition that poses an immediate threat to pipeline integrity or public safety.</li>
-            <li>If any immediate hazards are identified, describe any actions taken on-site (e.g., notifying supervisor, contacting emergency services, isolating an area if safe to do so) or notifications made.</li>
-        </ul>
-
-        <h4>Section 12: Recommendations</h4>
-        <ul>
-            <li>Based on the overall assessment findings, select the most appropriate recommended action(s) from the provided radio button list.</li>
-            <li>In the "Summary of Recommendations" textarea, elaborate on the selected recommendation(s). If "Other" was chosen, provide specific details here. Include any suggested timelines for actions if applicable. This summary should clearly articulate what needs to be done, why, and potentially by when.</li>
-            <li>Provide a "Final Summary of Evaluation." This should be a concise overview of the pipeline crossing's condition, highlighting key findings, overall risk assessment (qualitative), and the justification for the recommendations.</li>
-        </ul>
-
-        <h3>III. Post-Assessment</h3>
-        <ul>
-            <li><strong>Review Form:</strong> Before submitting, review the entire form for completeness, accuracy, and clarity. Ensure all required fields are filled and comments are descriptive.</li>
-            <li><strong>Submit Report:</strong> Submit the completed assessment form and all attachments (photos, sketches) according to company procedures.</li>
-            <li><strong>Follow-Up:</strong> Ensure any identified immediate hazards are appropriately escalated and addressed. Track the progress of other recommendations as required.</li>
-        </ul>
-
-        <h3>IV. Safety Considerations</h3>
-        <ul>
-            <li>Always prioritize safety. Do not perform any task that you feel is unsafe.</li>
-            <li>Be aware of your surroundings at all times, especially regarding traffic, water hazards, and weather conditions.</li>
-            <li>Use appropriate PPE.</li>
-            <li>If working alone, ensure you have a check-in procedure.</li>
-            <li>Do not enter confined spaces unless trained, authorized, and all safety procedures are followed.</li>
-            <li>Report any incidents or near misses.</li>
-        </ul>
-    `;
-}
-
-
-function setupTabs() {
-    const tabForm = document.getElementById('tab-form');
-    const tabProcess = document.getElementById('tab-process');
-    const formContainer = document.getElementById('assessment-form-container');
-    const processContainer = document.getElementById('process-guidelines-container');
-
-    if (!tabForm || !tabProcess || !formContainer || !processContainer) {
-        console.error('Tab elements or containers not found!');
-        return;
-    }
-
-    tabForm.addEventListener('click', () => {
-        if (formContainer) formContainer.style.display = 'block';
-        if (processContainer) processContainer.style.display = 'none';
-        tabForm.classList.add('active');
-        tabForm.setAttribute('aria-selected', 'true');
-        tabProcess.classList.remove('active');
-        tabProcess.setAttribute('aria-selected', 'false');
-    });
-
-    tabProcess.addEventListener('click', () => {
-        if (formContainer) formContainer.style.display = 'none';
-        if (processContainer) processContainer.style.display = 'block';
-        tabProcess.classList.add('active');
-        tabProcess.setAttribute('aria-selected', 'true');
-        tabForm.classList.remove('active');
-        tabForm.setAttribute('aria-selected', 'false');
-    });
-}
-
-function collectFormData(): Record<string, any> {
-    const formData: Record<string, any> = {};
-    const form = document.getElementById('assessment-form') as HTMLFormElement;
-    if (!form) return formData;
-
-    const elements = form.elements;
-    for (let i = 0; i < elements.length; i++) {
-        const element = elements[i] as HTMLInputElement | HTMLSelectElement | HTMLTextAreaElement;
-        const key = element.id || element.name;
-        if (!key) continue; // Skip elements without name or id
-
-        if (element.type === 'checkbox') {
-            formData[key] = (element as HTMLInputElement).checked;
-        } else if (element.type === 'radio') {
-            if ((element as HTMLInputElement).checked) {
-                formData[element.name] = (element as HTMLInputElement).value;
+            const element = document.getElementById(field.id);
+            if (!element) return;
+            
+            if (field.type === 'checkbox-group') {
+                const groupElements = document.getElementsByName(field.id) as NodeListOf<HTMLInputElement>;
+                formData[field.id] = Array.from(groupElements)
+                    .filter(el => el.checked)
+                    .map(el => el.value);
+            } else if (field.type === 'radio-group') {
+                const groupElements = document.getElementsByName(field.id) as NodeListOf<HTMLInputElement>;
+                const checkedEl = Array.from(groupElements).find(el => el.checked);
+                formData[field.id] = checkedEl ? checkedEl.value : '';
+            } else {
+                 formData[field.id] = (element as HTMLInputElement).value;
             }
-        } else if (element.type === 'file') {
-            // Read directly from the central data store
-            formData[key] = fileDataStore[key] || [];
-        } else if (element.tagName === 'SELECT') {
-             formData[key] = (element as HTMLSelectElement).value;
-        }
-        else {
-            formData[key] = element.value;
+            
+            // Handle associated radio buttons like for installation-temp
+            if (field.assessmentOptions) {
+                const assessmentKey = `${field.id}-assessment`;
+                const groupElements = document.getElementsByName(assessmentKey) as NodeListOf<HTMLInputElement>;
+                const checkedEl = Array.from(groupElements).find(el => el.checked);
+                formData[assessmentKey] = checkedEl ? checkedEl.value : '';
+            }
+        });
+    });
+
+    // Add selected system and MAOP
+    const docSelect = document.getElementById('doc-select') as HTMLSelectElement;
+    if (docSelect && docSelect.value) {
+        const systemSelectId = `${docSelect.value}-system-select`;
+        const systemSelect = document.getElementById(systemSelectId) as HTMLSelectElement;
+        if(systemSelect) {
+            // Store both the value (for loading) and the text (for reporting)
+            formData[systemSelectId] = systemSelect.value;
         }
     }
+    formData['maop'] = (document.getElementById('maop') as HTMLInputElement).value;
+
     return formData;
 }
 
-function populateFormWithData(data: Record<string, any>) {
-    const form = document.getElementById('assessment-form') as HTMLFormElement;
-    if (!form) return;
-    
-    // Reset form and clear file store before populating
-    form.reset();
-    Object.keys(fileDataStore).forEach(key => {
-        fileDataStore[key] = [];
-        renderFileList(key);
-    });
 
-    Object.keys(data).forEach(key => {
-        const element = document.getElementById(key) as HTMLInputElement | HTMLSelectElement | HTMLTextAreaElement;
-        if (element) {
-            if (element.type === 'file') {
-                const fileData = data[key] as FileWithComment[];
-                if (Array.isArray(fileData)) {
-                    // Populate the store and render the list
-                    fileDataStore[key] = fileData;
-                    renderFileList(key);
-                }
-                // Clear the actual file input element's value
-                element.value = '';
-            } else if (element.type === 'checkbox') {
-                (element as HTMLInputElement).checked = data[key];
-            } else if (element.tagName === 'SELECT') {
-                 (element as HTMLSelectElement).value = data[key];
-                 if (key === 'doc-center') {
-                     element.dispatchEvent(new Event('change')); // This will trigger setupDocDependentFields logic
-                     // Now handle the dependent system selects
-                     const selectedDocValue = data['doc-center'];
-                     let systemSelectId: string | null = null;
-                     if (selectedDocValue === 'bng' && data['bng-system-select']) {
-                         systemSelectId = 'bng-system-select';
-                     } else if (selectedDocValue === 'nu_me' && data['nu-me-system-select']) {
-                         systemSelectId = 'nu-me-system-select';
-                     } else if (selectedDocValue === 'nu_nh' && data['nu-nh-system-select']) {
-                         systemSelectId = 'nu-nh-system-select';
-                     } else if (selectedDocValue === 'fge' && data['fge-system-select']) {
-                        systemSelectId = 'fge-system-select';
-                     }
-
-                     if (systemSelectId) {
-                        const systemSelectValue = data[systemSelectId];
-                        // setTimeout to allow the system select to be populated by the 'doc-center' change handler
-                        setTimeout(() => {
-                            const systemSelectElement = document.getElementById(systemSelectId!) as HTMLSelectElement;
-                            if (systemSelectElement) {
-                                systemSelectElement.value = systemSelectValue;
-                                systemSelectElement.dispatchEvent(new Event('change')); // Trigger MAOP update
-                            }
-                        }, 0); // Small delay to ensure dropdown is populated.
-                     }
-                 }
-            } else if (element.type !== 'radio') { 
-                element.value = data[key];
-            }
-        } else {
-            const radioElements = form.elements.namedItem(key);
-            if (radioElements instanceof RadioNodeList) {
-                for (let i = 0; i < radioElements.length; i++) {
-                    const radio = radioElements[i] as HTMLInputElement;
-                    if (radio.value === data[key]) {
-                        radio.checked = true;
-                        break;
-                    }
-                }
-            }
-        }
-    });
-    
-    // Auto-resize all textareas after populating them
-    document.querySelectorAll('textarea').forEach(textarea => {
-        autoResizeTextarea(textarea);
-    });
-
-    alert('Assessment data loaded successfully!');
-}
-
-
-function handleSaveAssessment() {
-    const data = collectFormData();
-    const jsonData = JSON.stringify(data, null, 2);
-    const blob = new Blob([jsonData], { type: 'application/json' });
-    const url = URL.createObjectURL(blob);
-    const a = document.createElement('a');
-    a.href = url;
-    const crossingIdElement = document.getElementById('crossing-id') as HTMLInputElement;
-    const crossingId = crossingIdElement ? crossingIdElement.value.replace(/[^a-z0-9]/gi, '_') : 'assessment';
-    a.download = `pipeline_assessment_${crossingId || 'data'}.json`;
-    document.body.appendChild(a);
-    a.click();
-    document.body.removeChild(a);
-    URL.revokeObjectURL(url);
-    alert('Assessment data saved!');
-}
-
-function handleOpenAssessment() {
-    const fileInput = document.getElementById('open-file-input') as HTMLInputElement;
-    if (fileInput) {
-        fileInput.click();
-    }
-}
-
-function setupDocDependentFields() {
-    const docCenterSelect = document.getElementById('doc-center') as HTMLSelectElement;
-    const maopValueInput = document.getElementById('maop-value') as HTMLInputElement;
-    const maopUnitSelect = document.getElementById('maop-unit') as HTMLSelectElement;
-
-    const systemSelects = {
-        'bng': {
-            container: document.getElementById('bng-system-select-container'),
-            select: document.getElementById('bng-system-select') as HTMLSelectElement,
-            data: bngSystems,
-            placeholder: 'Select System for Bangor Natural Gas...'
-        },
-        'nu_me': {
-            container: document.getElementById('nu-me-system-select-container'),
-            select: document.getElementById('nu-me-system-select') as HTMLSelectElement,
-            data: nuMeSystems,
-            placeholder: 'Select System for NU Maine...'
-        },
-        'nu_nh': {
-            container: document.getElementById('nu-nh-system-select-container'),
-            select: document.getElementById('nu-nh-system-select') as HTMLSelectElement,
-            data: nuNhSystems,
-            placeholder: 'Select System for NU New Hampshire...'
-        },
-        'fge': {
-            container: document.getElementById('fge-system-select-container'),
-            select: document.getElementById('fge-system-select') as HTMLSelectElement,
-            data: fgAndESystems,
-            placeholder: 'Select System for FG&E...'
-        }
-    };
-
-    if (!docCenterSelect || !maopValueInput || !maopUnitSelect ||
-        !systemSelects.bng.container || !systemSelects.bng.select ||
-        !systemSelects.nu_me.container || !systemSelects.nu_me.select ||
-        !systemSelects.nu_nh.container || !systemSelects.nu_nh.select ||
-        !systemSelects.fge.container || !systemSelects.fge.select) {
-        console.error('One or more elements for DOC dependent fields are missing.');
-        return;
-    }
-
-    const populateSystemDropdown = (config: typeof systemSelects[keyof typeof systemSelects]) => {
-        config.select.innerHTML = ''; // Clear existing options
-        const placeholderOption = document.createElement('option');
-        placeholderOption.value = '';
-        placeholderOption.text = config.placeholder;
-        placeholderOption.disabled = true;
-        placeholderOption.selected = true;
-        config.select.appendChild(placeholderOption);
-
-        config.data.forEach((system) => {
-            const option = document.createElement('option');
-            option.value = system.originalIndex.toString(); // Use originalIndex as value
-            option.text = system.displayText;
-            config.select.appendChild(option);
-        });
-    };
-
-    const clearMaopFields = () => {
-        maopValueInput.value = '';
-        maopUnitSelect.value = '';
-        if (maopUnitSelect.options.length > 0) maopUnitSelect.selectedIndex = 0;
-    };
-    
-    const handleDocChange = () => {
-        const selectedDoc = docCenterSelect.value as keyof typeof systemSelects | '';
-        clearMaopFields();
-
-        // Hide all system select containers first
-        Object.values(systemSelects).forEach(s => {
-            if (s.container) s.container.style.display = 'none';
-            if (s.select) s.select.value = '';
-        });
-
-        if (selectedDoc && systemSelects[selectedDoc]) {
-            const currentSystem = systemSelects[selectedDoc];
-            if (currentSystem.container) currentSystem.container.style.display = 'block';
-            populateSystemDropdown(currentSystem);
-        }
-    };
-
-    const createSystemSelectChangeHandler = (config: typeof systemSelects[keyof typeof systemSelects]) => {
-        return () => {
-            const selectedIndexStr = config.select.value;
-            if (selectedIndexStr && selectedIndexStr !== '') {
-                const selectedIndex = parseInt(selectedIndexStr, 10);
-                const system = config.data.find(s => s.originalIndex === selectedIndex);
-                if (system) {
-                    maopValueInput.value = system.maopValue.toString();
-                    maopUnitSelect.value = system.maopUnit;
-                }
-            } else {
-                clearMaopFields();
-            }
-        };
-    };
-
-    docCenterSelect.addEventListener('change', handleDocChange);
-    systemSelects.bng.select.addEventListener('change', createSystemSelectChangeHandler(systemSelects.bng));
-    systemSelects.nu_me.select.addEventListener('change', createSystemSelectChangeHandler(systemSelects.nu_me));
-    systemSelects.nu_nh.select.addEventListener('change', createSystemSelectChangeHandler(systemSelects.nu_nh));
-    systemSelects.fge.select.addEventListener('change', createSystemSelectChangeHandler(systemSelects.fge));
-
-    handleDocChange(); // Initial setup
-}
-
-interface ReportFieldDetail {
-    section: string;
-    label: string;
-    value: string; // User-friendly text representation
-}
-
-function getElementValue(id: string): string {
-    const el = document.getElementById(id) as HTMLInputElement | HTMLSelectElement | HTMLTextAreaElement;
-    return el ? el.value : 'N/A';
-}
-
-function getSelectedOptionText(selectId: string): string {
-    const select = document.getElementById(selectId) as HTMLSelectElement;
-    if (select && select.selectedIndex >= 0 && select.options[select.selectedIndex]) {
-        return select.options[select.selectedIndex].text || 'N/A';
-    }
-    return 'N/A';
-}
-
-function collectReportData(): ReportFieldDetail[] {
-    const reportData: ReportFieldDetail[] = [];
-
-    allFormSections.forEach(section => {
-        section.fields.forEach(field => {
-            const element = document.getElementById(field.id) as HTMLInputElement | HTMLSelectElement | HTMLTextAreaElement;
-            let displayValue = 'N/A';
-
-            if (element) {
-                switch (field.type) {
-                    case 'date': {
-                        const rawDate = element.value; // YYYY-MM-DD
-                        if (rawDate) {
-                            const [year, month, day] = rawDate.split('-');
-                            displayValue = `${month}/${day}/${year}`;
-                        }
-                        break;
-                    }
-                    case 'select':
-                        displayValue = getSelectedOptionText(field.id);
-                        if (field.id === 'doc-center' && (element as HTMLSelectElement).value) {
-                             // Also capture specific system if selected
-                            const docVal = (element as HTMLSelectElement).value;
-                            let systemSelectId: string | null = null;
-                            if (docVal === 'bng') systemSelectId = 'bng-system-select';
-                            else if (docVal === 'nu_me') systemSelectId = 'nu-me-system-select';
-                            else if (docVal === 'nu_nh') systemSelectId = 'nu-nh-system-select';
-                            else if (docVal === 'fge') systemSelectId = 'fge-system-select';
-
-                            if (systemSelectId) {
-                                const systemSelectEl = document.getElementById(systemSelectId) as HTMLSelectElement;
-                                if (systemSelectEl && systemSelectEl.value !== '') {
-                                    reportData.push({
-                                        section: section.title,
-                                        label: systemSelectEl.labels?.[0]?.textContent || (systemSelectEl.previousElementSibling as HTMLLabelElement)?.textContent || systemSelectEl.id,
-                                        value: getSelectedOptionText(systemSelectId)
-                                    });
-                                }
-                            }
-                        }
-                        break;
-                    case 'checkbox-group': {
-                        const checkedItems: string[] = [];
-                        field.checkboxOptions?.forEach(opt => {
-                            const chkId = `${field.id}-${opt.value.toLowerCase().replace(/\s+/g, '-')}`;
-                            const chk = document.getElementById(chkId) as HTMLInputElement;
-                            if (chk && chk.checked) {
-                                checkedItems.push(opt.text);
-                            }
-                        });
-                        displayValue = checkedItems.length > 0 ? checkedItems.join(', ') : 'None selected';
-                        break;
-                    }
-                    case 'radio-group': {
-                        const radioName = field.id;
-                        const checkedRadio = document.querySelector(`input[name="${radioName}"]:checked`) as HTMLInputElement;
-                        if (checkedRadio) {
-                            const radioLabel = document.querySelector(`label[for="${checkedRadio.id}"]`);
-                            displayValue = radioLabel?.textContent || checkedRadio.value;
-                        } else {
-                            displayValue = 'None selected';
-                        }
-                        break;
-                    }
-                    case 'file': {
-                        const files = fileDataStore[field.id] || [];
-                        if (files.length > 0) {
-                            displayValue = "See attached photographs in report.";
-                        } else {
-                            displayValue = "No files attached.";
-                        }
-                        break;
-                    }
-                    case 'number':
-                        displayValue = element.value || 'N/A';
-                        if (field.assessmentOptions) {
-                            const assessmentRadioName = `${field.id}-assessment-type`;
-                            const checkedAssessmentRadio = document.querySelector(`input[name="${assessmentRadioName}"]:checked`) as HTMLInputElement;
-                            if (checkedAssessmentRadio) {
-                                displayValue += ` (${checkedAssessmentRadio.value})`;
-                            } else if (element.value) { // Only show 'not selected' if a number is entered
-                                displayValue += ' (Assessment type not selected)';
-                            }
-                        }
-                        break;
-                    case 'text':
-                    case 'textarea':
-                    default:
-                        displayValue = element.value || 'N/A';
-                        break;
-                }
-            }
-             // Don't add system select placeholders if they are not visible/relevant
-            if (field.containerId && field.type === 'select' && field.id.includes('-system-select')) {
-                const container = document.getElementById(field.containerId);
-                if (container && container.style.display === 'none') {
-                    return; // Skip this field
-                }
-            }
-
-            reportData.push({
-                section: section.title,
-                label: field.label,
-                value: displayValue
-            });
-        });
-    });
-    return reportData;
-}
-
-async function buildPdfDocument(approvedExecSummary: string, approvedFinalSummary: string) {
-    const loadingOverlay = document.getElementById('loading-overlay');
-    const loadingText = document.getElementById('loading-text');
-
-    if (loadingOverlay && loadingText) {
-        loadingText.textContent = 'Generating Report...';
-        loadingOverlay.style.display = 'flex';
-    }
-
-    try {
-        const { jsPDF } = window.jspdf;
-        const doc = new jsPDF({ orientation: 'p', unit: 'mm', format: 'a4' });
-        if (typeof doc.autoTable !== 'function') {
-            console.error("jsPDF-AutoTable plugin is not loaded correctly!");
-            alert("Error: PDF generation plugin (AutoTable) is missing. Cannot generate report.");
-            if (loadingOverlay) loadingOverlay.style.display = 'none';
-            return;
-        }
-        
-        // Update the form field in the UI with the approved text, so it's reflected in the table
-        const finalSummaryTextarea = document.getElementById('final-summary-evaluation') as HTMLTextAreaElement;
-        if (finalSummaryTextarea) {
-            finalSummaryTextarea.value = approvedFinalSummary;
-             autoResizeTextarea(finalSummaryTextarea);
-        }
-        
-        const reportItems = collectReportData();
-        const crossingId = getElementValue('crossing-id');
-        
-        const rawDate = getElementValue('assessment-date'); // YYYY-MM-DD
-        let assessmentDate = 'N/A';
-        if (rawDate) {
-            const [year, month, day] = rawDate.split('-');
-            assessmentDate = `${month}/${day}/${year}`;
-        }
-
-        const assessorName = getElementValue('assessor-name');
-        const immediateHazards = getElementValue('immediate-hazards');
-        
-        // --- File Processing ---
-        const allFilesWithComments = [
-            ...(fileDataStore['file-attachments'] || []),
-            ...(fileDataStore['installation-records'] || [])
-        ];
-
-        const imageFiles = allFilesWithComments.filter(item => item.type.startsWith('image/'));
-
-        const processedImages = await Promise.all(
-            imageFiles.map(async (item) => {
-                try {
-                    const img = new Image();
-                    await new Promise((resolve, reject) => {
-                        img.onload = resolve;
-                        img.onerror = reject;
-                        img.src = item.dataUrl;
-                    });
-                    return {
-                        name: item.name,
-                        comment: item.comment,
-                        dataUrl: item.dataUrl,
-                        width: img.width,
-                        height: img.height,
-                        type: item.type.replace('image/', '').toUpperCase()
-                    };
-                } catch (error) {
-                    console.error(`Error processing image ${item.name}:`, error);
-                    return null;
-                }
-            })
-        );
-        const validImages = processedImages.filter(img => img !== null) as NonNullable<typeof processedImages[0]>[];
-
-
-        // --- PDF Generation ---
-        const addHeaderFooter = () => {
-            const pageCount = (doc.internal as any).getNumberOfPages();
-            for (let i = 1; i <= pageCount; i++) {
-                doc.setPage(i);
-                doc.setFont('helvetica', 'normal'); // Explicitly set font style to prevent errors
-                doc.setFontSize(9);
-                doc.setTextColor(128);
-                doc.text(`Pipeline Crossing Assessment: ${crossingId}`, 15, 10);
-                doc.text(`Page ${i} of ${pageCount}`, doc.internal.pageSize.getWidth() - 15, doc.internal.pageSize.getHeight() - 10, { align: 'right' });
-            }
-        };
-
-        // --- Title Page ---
-        doc.setFontSize(22);
-        doc.setFont('helvetica', 'bold');
-        doc.text('Pipeline Bridge Crossing', 105, 60, { align: 'center' });
-        doc.text('Assessment Report', 105, 70, { align: 'center' });
-        doc.setFontSize(14);
-        doc.setFont('helvetica', 'normal');
-        doc.text(`Crossing ID: ${crossingId}`, 105, 90, { align: 'center' });
-        doc.text(`Assessment Date: ${assessmentDate}`, 105, 100, { align: 'center' });
-        doc.text(`Assessed By: ${assessorName}`, 105, 110, { align: 'center' });
-        
-        // --- Executive Summary Page ---
-        doc.addPage();
-        let yPos = 25;
-        doc.setFontSize(18);
-        doc.text("Executive Summary", 15, yPos);
-        yPos += 2;
-        doc.setLineWidth(0.5);
-        doc.line(15, yPos, 195, yPos);
-        yPos += 8;
-
-        const writeTextBlock = (title: string, content: string, titleOptions: any = {}, contentOptions: any = {}) => {
-            if (content && content !== 'N/A' && content.trim() !== '') {
-                doc.setFontSize(12);
-                doc.setFont('helvetica', 'bold');
-                doc.setTextColor(titleOptions.color || 0);
-                doc.text(title, 15, yPos);
-                yPos += 6;
-                doc.setFontSize(10);
-                doc.setFont('helvetica', 'normal');
-                doc.setTextColor(contentOptions.color || 0);
-                const splitText = doc.splitTextToSize(content, 180);
-                doc.text(splitText, 15, yPos);
-                yPos += (splitText.length * 5) + 5;
-                doc.setTextColor(0); // Reset color
-            }
-        };
-        
-        writeTextBlock('Executive Summary:', approvedExecSummary);
-        
-        if (immediateHazards && immediateHazards.trim() !== '' && immediateHazards !== 'N/A') {
-            writeTextBlock('IMMEDIATE HAZARDS IDENTIFIED:', immediateHazards, { color: [194, 25, 25] });
-        }
-        
-        // --- Detailed Data Table Page ---
-        const finalReportItems = collectReportData();
-        
-        doc.addPage();
-        const tableData = finalReportItems
-            .filter(item => {
-                if (item.label.startsWith('System (NU') || item.label.startsWith('System (FG&E') || item.label.startsWith('System (Bangor Natural Gas)')) {
-                    const docVal = getElementValue('doc-center');
-                    if (item.label.includes('Bangor Natural Gas') && docVal !== 'bng') return false;
-                    if (item.label.includes('Maine') && docVal !== 'nu_me') return false;
-                    if (item.label.includes('Hampshire') && docVal !== 'nu_nh') return false;
-                    if (item.label.includes('FG&E') && docVal !== 'fge') return false;
-                }
-                if (item.label.toLowerCase().startsWith('specify other') && (item.value === 'N/A' || item.value.trim() === '')) {
-                    return false;
-                }
-                return true;
-            })
-            .map(item => [item.section, item.label, item.value]);
-
-        (doc as any).autoTable({
-            head: [['Section', 'Field Description', 'Value / Observation']],
-            body: tableData,
-            theme: 'striped',
-            headStyles: { fillColor: [0, 90, 156] },
-            startY: 25,
-            didParseCell: (data: any) => {
-                if (data.cell.section === 'body' && data.column.index === 0) {
-                    if (data.row.index > 0 && data.table.body[data.row.index - 1].cells[0].raw === data.cell.raw) {
-                        data.cell.text = '';
-                    }
-                }
-            },
-            willDrawPage: (data: any) => {
-                doc.setFontSize(18);
-                doc.text("Detailed Assessment Data", 15, 18);
-            }
-        });
-
-        // --- Photographs Section ---
-        if (validImages.length > 0) {
-            doc.addPage();
-            yPos = 25;
-            doc.setFontSize(18);
-            doc.text("Photographs", 15, yPos);
-            yPos += 2;
-            doc.setLineWidth(0.5);
-            doc.line(15, yPos, 195, yPos);
-            yPos += 8;
-            
-            for (const img of validImages) {
-                const pageHeight = doc.internal.pageSize.getHeight();
-                const pageWidth = doc.internal.pageSize.getWidth();
-                const margin = 15;
-
-                const maxWidth = pageWidth - (2 * margin);
-                const maxHeight = pageHeight / 2.5;
-
-                // New, robust scaling logic
-                const widthRatio = maxWidth / img.width;
-                const heightRatio = maxHeight / img.height;
-                // Use Math.min to find the most constraining ratio. Cap at 1 so we don't scale up small images.
-                const ratio = Math.min(widthRatio, heightRatio, 1);
-        
-                const imgWidth = img.width * ratio;
-                const imgHeight = img.height * ratio;
-                
-                const requiredSpace = imgHeight + 25; // Approximate space needed for image and caption
-
-                if (yPos + requiredSpace > pageHeight - margin) {
-                    doc.addPage();
-                    yPos = 25;
-                    doc.setFontSize(18);
-                    doc.text("Photographs (continued)", 15, yPos);
-                    yPos += 2;
-                    doc.setLineWidth(0.5);
-                    doc.line(15, yPos, 195, yPos);
-                    yPos += 8;
-                }
-                
-                const x = (pageWidth - imgWidth) / 2; // Center the image
-                doc.addImage(img.dataUrl, img.type, x, yPos, imgWidth, imgHeight);
-                yPos += imgHeight + 5;
-                
-                doc.setFontSize(9);
-                doc.setTextColor(100);
-                doc.setFont('helvetica', 'bold');
-                doc.text(img.name, pageWidth / 2, yPos, { align: 'center' });
-                yPos += 4;
-
-                if (img.comment) {
-                    doc.setFont('helvetica', 'italic');
-                    doc.setTextColor(120);
-                    const commentText = doc.splitTextToSize(`Comment: ${img.comment}`, maxWidth - 10);
-                    doc.text(commentText, pageWidth / 2, yPos, { align: 'center' });
-                    yPos += commentText.length * 3.5;
-                    doc.setFont('helvetica', 'normal'); // Reset font style after using italic
-                }
-                yPos += 10;
-            }
-        }
-        
-        // Finalize: Add headers and footers to all pages
-        addHeaderFooter();
-
-        doc.save(`Pipeline_Assessment_Report_${crossingId.replace(/[^a-z0-9]/gi, '_') || 'Unnamed'}.pdf`);
-        alert('Report generation complete!');
-    } catch (err) {
-        console.error("Failed to generate report:", err);
-        alert("An unexpected error occurred while generating the report. Check the console for details.");
-    } finally {
-        if (loadingOverlay) loadingOverlay.style.display = 'none';
-    }
-}
-
-// New helper function to create a concise text summary of form data for the AI prompt
-function generateTextSummaryForAI(): string {
-    const reportItems = collectReportData();
-    let lastSection = '';
-    const summaryLines: string[] = [];
-
-    reportItems.forEach(item => {
-        // Exclude bulky file data and truly empty values from the AI prompt.
-        if (item.label.includes('Upload Photographs') ||
-            item.label.includes('Installation Records') ||
-            item.value === 'No files attached.' ||
-            item.value === 'N/A' ||
-            !item.value.trim() ||
-            item.value === 'None selected') {
-            return;
-        }
-
-        if (item.section !== lastSection) {
-            summaryLines.push(`\n## ${item.section}\n`);
-            lastSection = item.section;
-        }
-        summaryLines.push(`- **${item.label.replace(':', '')}:** ${item.value}`);
-    });
-
-    return summaryLines.join('\n');
-}
-
-
-async function handleGenerateReport() {
-    const loadingOverlay = document.getElementById('loading-overlay');
-    const loadingText = document.getElementById('loading-text');
-    const modal = document.getElementById('summary-review-modal');
-
-    if (loadingOverlay && loadingText) {
-        loadingText.textContent = 'Generating Summaries...';
-        loadingOverlay.style.display = 'flex';
-    }
-
-    let executiveSummaryText = "Could not generate summary.";
-    let finalSummaryEvalText = getElementValue('final-summary-evaluation');
-    // Generate a concise text summary instead of sending the entire raw JSON data
-    const textSummaryForAI = generateTextSummaryForAI();
-
-    try {
-        const ai = new GoogleGenAI({ apiKey: API_KEY });
-        
-        const execSummaryPrompt = `Based on the following pipeline assessment data, write a concise, high-level executive summary for the first page of a formal report. Focus on the overall condition, most critical findings, and primary recommendations. The tone should be professional and objective. Data:\n${textSummaryForAI}`;
-        const finalSummaryPrompt = `Based on the following pipeline assessment data, write a detailed "Final Summary of Evaluation". This will be placed in the main data table of the report. It should be a comprehensive paragraph summarizing the key findings, observed conditions, and the justification for the recommendations. Data:\n${textSummaryForAI}`;
-
-        // Run both API calls in parallel
-        const [execSummaryResponse, finalSummaryResponse] = await Promise.all([
-            ai.models.generateContent({ model: 'gemini-2.5-flash-preview-04-17', contents: execSummaryPrompt }),
-            ai.models.generateContent({ model: 'gemini-2.5-flash-preview-04-17', contents: finalSummaryPrompt })
-        ]);
-
-        executiveSummaryText = execSummaryResponse.text;
-        finalSummaryEvalText = finalSummaryResponse.text;
-        
-    } catch (apiError) {
-        console.error("Gemini API Error:", apiError);
-        alert("Warning: Could not connect to the AI service to generate summaries. Please write them manually.");
-        executiveSummaryText = "Failed to generate summary. Please enter manually.";
-        finalSummaryEvalText = getElementValue('final-summary-evaluation') || "Failed to generate summary. Please enter manually.";
-    } finally {
-        if (loadingOverlay) loadingOverlay.style.display = 'none';
-    }
-
-    // --- Setup and Show Modal ---
-    if (!modal) return;
-    const execSummaryTextarea = document.getElementById('modal-exec-summary') as HTMLTextAreaElement;
-    const finalSummaryTextarea = document.getElementById('modal-final-summary') as HTMLTextAreaElement;
-    const cancelButton = document.getElementById('modal-cancel-button');
-    const generatePdfButton = document.getElementById('modal-generate-pdf-button');
-    const execSummaryWrapper = document.getElementById('modal-exec-summary-wrapper')!;
-    const finalSummaryWrapper = document.getElementById('modal-final-summary-wrapper')!;
-
-    execSummaryTextarea.value = executiveSummaryText;
-    finalSummaryTextarea.value = finalSummaryEvalText;
-
-    [execSummaryTextarea, finalSummaryTextarea].forEach(autoResizeTextarea);
-    execSummaryTextarea.oninput = () => autoResizeTextarea(execSummaryTextarea);
-    finalSummaryTextarea.oninput = () => autoResizeTextarea(finalSummaryTextarea);
-
-    // Add improve buttons if in admin mode
-    if (document.body.classList.contains('voice-enabled')) {
-        addImproveButton(execSummaryWrapper, execSummaryTextarea);
-        addImproveButton(finalSummaryWrapper, finalSummaryTextarea);
-    }
-    
-    // Define a single handler for the generate button to be able to remove it later
-    const generateHandler = () => {
-        modal.style.display = 'none';
-        const approvedExec = execSummaryTextarea.value;
-        const approvedFinal = finalSummaryTextarea.value;
-        buildPdfDocument(approvedExec, approvedFinal);
-        generatePdfButton?.removeEventListener('click', generateHandler); // Cleanup
-    };
-
-    if (cancelButton) {
-        cancelButton.onclick = () => {
-            modal.style.display = 'none';
-            generatePdfButton?.removeEventListener('click', generateHandler); // Cleanup
-        };
-    }
-    if (generatePdfButton) {
-        // Remove old listener before adding a new one to prevent multiple triggers
-        generatePdfButton.removeEventListener('click', generateHandler);
-        generatePdfButton.addEventListener('click', generateHandler);
-    }
-
-    modal.style.display = 'flex';
-}
-
-
-function handleLoadExampleAssessment() {
-    const today = new Date();
-    const year = today.getFullYear();
-    const month = (today.getMonth() + 1).toString().padStart(2, '0');
-    const day = today.getDate().toString().padStart(2, '0');
-    const currentDate = `${year}-${month}-${day}`; // Format for date input: YYYY-MM-DD
-    
-    // Using a 1x1 transparent PNG for image placeholders.
-    const placeholderImageDataUrl = 'data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mNkYAAAAAYAAjCB0C8AAAAASUVORK5CYII=';
-
-
-    const exampleData: Record<string, any> = {
-        // Section 1: General Site & Crossing Information
-        'assessment-date': currentDate,
-        'assessor-name': 'Timothy Bickford (Example)',
-        'doc-center': 'nu_me', // Northern Utilities - Maine
-        'crossing-id': 'ME-WELLS-001-RTE109',
-        'crossing-description': 'Pipeline crossing attached to the south side of the Rte 109 bridge over the Webhannet River. Access via shoulder of Rte 109.',
-        'gps-lat': '43.3105° N',
-        'gps-lon': '70.5730° W',
-        
-        // Section 2: Bridge & Environmental Context
-        'road-name': 'Route 109',
-        'feature-crossed': 'Webhannet River',
-        'bridge-name': 'Route 109 Bridge',
-        'bridge-number': 'BR-ME-45A',
-        'bridge-type': 'girder',
-        'bridge-material': 'composite',
-        'ambient-temp': '68',
-        'weather-conditions': 'Sunny, clear, light breeze.',
-        'vegetation-growth': 'Minor grass and weeds growing near abutments, but not impacting pipe or supports. No trees in immediate vicinity.',
-        'scour-erosion': 'No significant scour observed around bridge abutments or piers. River banks appear stable.',
-        'proximity-water': 'Pipeline crosses directly over the Webhannet River, a tidal estuary. Pipe is approximately 12 feet above mean high water.',
-        'debris-accumulation': 'Some small branches and leaves accumulated on the lower flange of a bridge girder near the pipe, but not in direct contact or causing an issue.',
-
-        // Section 3: Pipeline Identification & Specifications
-        'pipeline-material': 'steel_pipe',
-        'pipeline-diameter': '6', // 6"
-        'pipeline-diameter-other': '',
-        'pipe-wall-thickness': '0.280',
-        'pipe-wall-thickness-assessment-type': 'Stamped on Pipe',
-        'installation-temp': '50',
-        'installation-temp-assessment-type': 'Documented in Original Installation Records',
-        'nu-me-system-select': nuMeSystems.findIndex(s => s.ds === '535' && s.name === 'Route 109').toString(), // Auto-populates MAOP based on selection
-        'maop-unit': 'psig', // Will be auto-populated by nu-me-system-select change
-        'maop-value': '56',   // Will be auto-populated
-
-        // Section 4: Pipeline Support & Anchorage System
-        'pipeline-support-methods-ring_girders': true,
-        'pipeline-support-methods-hangers_rods': true,
-        'other-support-specify': '',
-        'support-condition-thermal-stress': 'minor_stress_wear',
-        'support-condition-thermal-stress-comments': 'Minor paint cracking observed at some hanger connections to bridge steel, possibly due to thermal cycling. No visible deformation of supports.',
-        'pipe-movement-at-supports': 'correctly_positioned',
-        'pipe-movement-at-supports-comments': 'Pipe appears to be centered on supports. No evidence of excessive rubbing.',
-        'sliding-roller-functionality': 'na_no_sliding_roller',
-        'sliding-roller-functionality-comments': '',
-        'support-comments': 'Supports are generally in good condition. Some surface rust on older hanger components. Hangers appear to allow for some longitudinal movement.',
-
-        // Section 5: Thermal Expansion & Movement Accommodation
-        'pipeline-expansion-features-designed_slack': true,
-        'other-expansion-specify': '',
-        'expansion-feature-functionality': 'functional_good_condition',
-        'expansion-feature-functionality-comments': 'Offsets on either side of the bridge appear to provide adequate slack for thermal movement. No signs of strain.',
-        'expansion-comments': 'The pipeline configuration includes gentle bends before and after the bridge attachment, likely accommodating thermal changes.',
-
-        // Section 6: Pipeline Condition & Coating Assessment
-        'external-corrosion': 'minor',
-        'coating-type': 'x_tru_coat',
-        'other-coating-type-specify': '',
-        'coating-condition': 'fair',
-        'coating-comments': 'Coating is generally intact. Minor abrasions and scratches noted on the underside of the pipe, possibly from debris or during installation. One area (approx 6" x 2") near a support shows some coating disbondment, requires further investigation.',
-        'test-station-accessible': 'yes',
-        'pipe-to-soil-potential': '-1150',
-        'cp-comments': 'Test station found on east abutment. Reading is well within acceptable limits, indicating effective CP.',
-        'pipe-physical-damage': 'One small dent (approx 1" diameter, 1/8" deep) observed on the top of the pipe mid-span. Appears to be old, no associated coating damage.',
-        'atmospheric-corrosion-details': 'Minor surface rust on exposed bolts of support clamps. Pipe coating is mostly intact.',
-
-        // Section 7: Pipe Clearances & Measurements
-        'clearance-vertical-above': '3.5',
-        'clearance-vertical-above-assessment-type': 'Measured',
-        'clearance-vertical-below': '12.0',
-        'clearance-vertical-below-assessment-type': 'Measured',
-        'clearance-horizontal-abutment': '2.0',
-        'clearance-horizontal-abutment-assessment-type': 'Estimated',
-        'clearance-horizontal-other': 'N/A',
-        'clearance-horizontal-other-assessment-type': 'Could not Assess',
-        'clearance-comments': 'Vertical clearance to water at mean high tide appears adequate. Clearance to bridge deck is sufficient. Horizontal clearance to abutment is good.',
-
-        // Section 8: Access & Safety
-        'accessibility-inspection': 'fair',
-        'safety-hazards': 'Working over water. Traffic on Rte 109 is moderate to heavy. Shoulder is narrow for parking and access.',
-        'access-structures-condition': 'N/A - Direct access from bridge deck and ground.',
-        'access-safety-comments': 'Requires traffic control for any significant work. Fall protection needed if working over the side of the bridge.',
-
-        // Section 9: Photographs & Attachments
-        'photographs-taken': 'Overall upstream view, overall downstream view, typical support detail, coating abrasion example, dent location, clearance to water.',
-        'installation-records': [
-            { name: "As_Built_Drawing.jpeg", comment: "Image of as-built drawing from original 1998 installation.", type: "image/jpeg", dataUrl: placeholderImageDataUrl }
-        ],
-        'file-attachments': [
-            { name: "Photo_Upstream_View.jpg", comment: "Upstream view showing pipe attachment to bridge girders.", type: "image/jpeg", dataUrl: placeholderImageDataUrl },
-            { name: "Photo_Coating_Damage.jpg", comment: "Close-up of the disbonded coating area near support #3.", type: "image/jpeg", dataUrl: placeholderImageDataUrl },
-            { name: "Sketch_of_Dent.png", comment: "Field sketch showing location and approximate size of dent.", type: "image/png", dataUrl: placeholderImageDataUrl }
-        ],
-
-        // Section 10: Third-Party Infrastructure & Proximity
-        'other-utilities-bridge': 'Telecom cables also attached to the bridge, approximately 5ft away from the gas pipeline, on the opposite side of the walkway.',
-        'bridge-structure-condition': 'Bridge steel shows some areas of surface rust and peeling paint. Concrete deck appears in fair condition with some minor cracking. Expansion joints appear functional.',
-        'third-party-damage-potential': 'Low risk. No active construction nearby. Potential for vehicle impact on bridge could affect pipe, but supports seem robust.',
-        'third-party-comments': 'Coordinate with bridge owner (MaineDOT) for any bridge maintenance activities.',
-
-        // Section 11: Immediate Hazards or Concerns Noted
-        'immediate-hazards': 'None identified.',
-        'actions-taken-hazards': '',
-
-        // Section 12: Recommendations
-        'recommendation-actions': 'further_inspection_ndt',
-        'recommendation-priority': 'medium',
-        'recommendations-summary': 'Recommend detailed NDT (e.g., UT) on the dented area (1" diameter) on top of pipe mid-span to confirm wall thickness. Also, recommend close-up inspection and potential repair of the 6"x2" area of disbonded coating near support #3. Re-evaluate in 12 months.',
-        'final-summary-evaluation': 'The Rte-109 Wells Maine pipeline crossing is generally in fair condition. The primary concerns are a small dent and an area of disbonded coating that require further investigation. Supports and clearances are adequate. No immediate hazards identified.'
-    };
-    populateFormWithData(exampleData);
-    alert('Example assessment data for "Rte-109 Wells Maine" loaded!');
-}
-
-
+// --- Main Application Logic ---
 document.addEventListener('DOMContentLoaded', () => {
-    renderForm();
-    setupTabs();
-    populateProcessGuidelines();
-    setupDocDependentFields(); 
-
-
-    const formContainer = document.getElementById('assessment-form-container');
-    const processContainer = document.getElementById('process-guidelines-container');
-    if (formContainer) formContainer.style.display = 'block';
-    if (processContainer) processContainer.style.display = 'none';
-    
-    // Ensure all conditional system select containers are initially hidden by JS too
-    ['bng-system-select-container', 'nu-me-system-select-container', 'nu-nh-system-select-container', 'fge-system-select-container'].forEach(id => {
-        const container = document.getElementById(id);
-        if (container) container.style.display = 'none';
-    });
-
-
-    const tabForm = document.getElementById('tab-form');
-    if (tabForm) {
-        tabForm.classList.add('active');
-        tabForm.setAttribute('aria-selected', 'true');
-    }
-
-    const saveButton = document.getElementById('save-assessment-button');
-    const openButton = document.getElementById('open-assessment-button');
-    const generateReportButton = document.getElementById('generate-report-button');
-    const exampleAssessmentButton = document.getElementById('example-assessment-button');
-    const fileInput = document.getElementById('open-file-input') as HTMLInputElement;
-
-    if (saveButton) saveButton.addEventListener('click', handleSaveAssessment);
-    if (openButton) openButton.addEventListener('click', handleOpenAssessment);
-    if (generateReportButton) generateReportButton.addEventListener('click', handleGenerateReport);
-    if (exampleAssessmentButton) exampleAssessmentButton.addEventListener('click', handleLoadExampleAssessment);
-    
-    // Admin Unlock Logic
+    const form = document.getElementById('assessment-form') as HTMLFormElement;
+    const guidelinesContainer = document.getElementById('process-guidelines-container') as HTMLElement;
+    const saveButton = document.getElementById('save-assessment-button') as HTMLButtonElement;
+    const openButton = document.getElementById('open-assessment-button') as HTMLButtonElement;
+    const openFileInput = document.getElementById('open-file-input') as HTMLInputElement;
+    const generateReportButton = document.getElementById('generate-report-button') as HTMLButtonElement;
+    const exampleButton = document.getElementById('example-assessment-button') as HTMLButtonElement;
+    const tabForm = document.getElementById('tab-form') as HTMLButtonElement;
+    const tabProcess = document.getElementById('tab-process') as HTMLButtonElement;
+    const formContainer = document.getElementById('assessment-form-container') as HTMLElement;
+    const processContainer = document.getElementById('process-guidelines-container') as HTMLElement;
     const adminPasswordInput = document.getElementById('admin-password') as HTMLInputElement;
     const adminUnlockButton = document.getElementById('admin-unlock-button') as HTMLButtonElement;
-    const adminContainer = document.getElementById('admin-unlock-container');
+    const adminUnlockContainer = document.getElementById('admin-unlock-container') as HTMLElement;
 
-    if (adminPasswordInput && adminUnlockButton && adminContainer) {
-        const unlockVoiceFeature = () => {
-            if (adminPasswordInput.value === '0665') {
-                document.body.classList.add('voice-enabled');
-                adminContainer.innerHTML = `<span class="unlocked-message">Voice Feature Unlocked</span>`;
-            } else {
-                adminPasswordInput.style.borderColor = '#d9534f'; // A red color for error
-                adminPasswordInput.value = '';
-                adminPasswordInput.placeholder = 'Incorrect';
-                // Vibrate to give haptic feedback on mobile if available
-                if (navigator.vibrate) {
-                    navigator.vibrate(100);
+    function populateForm() {
+        formSections.forEach(sectionData => {
+            const sectionEl = document.createElement('div');
+            sectionEl.classList.add('form-section');
+            sectionEl.id = sectionData.id;
+
+            const titleEl = document.createElement('h2');
+            const sectionNumber = document.createElement('span');
+            sectionNumber.className = 'section-number';
+            sectionNumber.textContent = `${formSections.indexOf(sectionData) + 1}`;
+            titleEl.appendChild(sectionNumber);
+            titleEl.appendChild(document.createTextNode(sectionData.title));
+            sectionEl.appendChild(titleEl);
+
+            sectionData.fields.forEach(field => {
+                const fieldEl = createFieldElement(field);
+                sectionEl.appendChild(fieldEl);
+            });
+
+            form.appendChild(sectionEl);
+        });
+        
+        // Add event listener for DOC dropdown after it's created
+        const docSelect = document.getElementById('doc-select') as HTMLSelectElement;
+        if (docSelect) {
+            docSelect.addEventListener('change', handleDocChange);
+        }
+        
+        // Add event listener for system dropdowns
+        ['bng-system-select', 'nu-me-system-select', 'nu-nh-system-select', 'fge-system-select'].forEach(id => {
+            const systemSelect = document.getElementById(id) as HTMLSelectElement;
+            if (systemSelect) {
+                systemSelect.addEventListener('change', handleSystemChange);
+            }
+        });
+    }
+    
+    function handleDocChange() {
+        const docSelect = document.getElementById('doc-select') as HTMLSelectElement;
+        const selectedDoc = docSelect.value;
+
+        // Hide all system containers
+        ['bng', 'nu-me', 'nu-nh', 'fge'].forEach(prefix => {
+            const container = document.getElementById(`${prefix}-system-select-container`);
+            if (container) container.style.display = 'none';
+        });
+
+        // Show the relevant system container
+        if (selectedDoc) {
+            const container = document.getElementById(`${selectedDoc}-system-select-container`);
+            if (container) container.style.display = 'block';
+        }
+        // Reset MAOP
+        (document.getElementById('maop') as HTMLInputElement).value = '';
+    }
+
+    function handleSystemChange(event: Event) {
+        const select = event.target as HTMLSelectElement;
+        const selectedValue = select.value;
+        const maopInput = document.getElementById('maop') as HTMLInputElement;
+
+        if (selectedValue && selectedValue.includes('|')) {
+            const [, maop] = selectedValue.split('|');
+            maopInput.value = maop;
+        } else {
+            maopInput.value = '';
+        }
+    }
+
+    function populateProcessGuidelines() {
+        guidelinesContainer.innerHTML = `
+            <h2>Process Guidelines for Pipeline Bridge Crossing Assessment</h2>
+            <p>This document provides guidance on completing the UNITIL Natural Gas Pipeline Bridge Crossing Assessment Form. The objective is to ensure a consistent, thorough, and safe evaluation of all pipeline assets at bridge crossings.</p>
+
+            <h3>General Principles</h3>
+            <ul>
+                <li><strong>Safety First:</strong> Always prioritize personal and public safety. Assess traffic conditions, potential fall hazards, and environmental risks before beginning the inspection. Wear appropriate Personal Protective Equipment (PPE).</li>
+                <li><strong>Thoroughness:</strong> Complete all applicable sections of the form. Use the "Comments" fields to provide detailed descriptions, especially for any noted deficiencies or unusual conditions.</li>
+                <li><strong>Documentation:</strong> Photographs are critical. Capture images of the overall crossing, specific components (supports, coating, etc.), and any identified areas of concern. Ensure photos are well-lit and in focus.</li>
+            </ul>
+
+            <h3>On-Site Assessment Walkthrough</h3>
+            <p>Follow the sections of the form in order to ensure a logical workflow.</p>
+
+            <h4>1. General Site & Crossing Information</h4>
+            <p>Establish the basic details of the assessment location.</p>
+            <ul>
+                <li><strong>Date and Assessor:</strong> Record the date of the inspection and the full name of the lead assessor.</li>
+                <li><strong>District Operating Center (DOC):</strong> Select the correct operating company and region. This will populate the relevant system names in Section 3.</li>
+                <li><strong>Crossing ID & Town/City:</strong> Use the official company crossing identifier if available and enter the town or city where the crossing is located.</li>
+                <li><strong>Description:</strong> The description should be concise but sufficient for another person to find the exact location (e.g., "Pipeline attached to west side of Main Street Bridge over Saco River").</li>
+                <li><strong>GPS Coordinates:</strong> Use a reliable GPS device to capture the latitude and longitude at the approximate center of the crossing.</li>
+            </ul>
+
+            <h4>2. Bridge & Environmental Context</h4>
+            <p>Describe the structure and environment affecting the pipeline.</p>
+            <ul>
+                <li><strong>Bridge Details:</strong> Record the road name, feature crossed (river, highway, etc.), and official bridge name/number if posted.</li>
+                <li><strong>Bridge Type/Material:</strong> Select the best descriptions. This context is important for understanding potential interactions between the pipe and bridge.</li>
+                <li><strong>Ambient Temperature & Weather:</strong> Record the temperature and general conditions. This is vital for understanding thermal expansion/contraction at the time of inspection.</li>
+                <li><strong>Environmental Factors:</strong> Carefully document vegetation, scour/erosion, water proximity, and debris. These can impose stress on the pipeline or impede access.</li>
+            </ul>
+
+            <h4>3. Pipeline Identification & Specifications</h4>
+            <p>Detail the physical characteristics of the pipeline asset.</p>
+            <ul>
+                <li><strong>System Name & MAOP:</strong> After selecting a DOC in Section 1, choose the correct system from the dropdown. The MAOP will auto-populate. Verify this against records if possible.</li>
+                <li><strong>Pipe Details:</strong> Record the diameter, wall thickness, and material. If unknown, state "Unknown".</li>
+                <li><strong>Installation Temperature:</strong> This is a key input for stress calculations. Use installation records if available. If not, select the appropriate source: "Assumed" or "Derived" based on historical weather data for the installation year.</li>
+            </ul>
+            
+            <h4>4. Pipeline Support System</h4>
+            <p>Evaluate how the pipeline is supported across the span.</p>
+            <ul>
+                <li><strong>Support Method:</strong> Identify the primary method used.</li>
+                <li><strong>Comments on Condition:</strong> This is a critical section. Look for signs of stress (bending, twisting), restricted movement (seized rollers), and general degradation (corrosion, loose fasteners).</li>
+            </ul>
+            
+            <h4>5. Expansion/Contraction Provisions</h4>
+            <p>Assess the features designed to manage thermal movement.</p>
+            <ul>
+                <li><strong>Feature Identification:</strong> Identify the expansion loop, joint, or other design feature.</li>
+                <li><strong>Functionality Comments:</strong> Determine if the feature can move as intended. Is an expansion loop filled with debris? Is a joint leaking or seized?</li>
+            </ul>
+
+            <h4>6. Coating and Corrosion Control</h4>
+            <p>Examine the primary line of defense against corrosion.</p>
+            <ul>
+                <li><strong>Coating Type & Condition:</strong> Identify the coating and meticulously document any damage, holidays, disbondment, or degradation.</li>
+                <li><strong>Cathodic Protection (CP):</strong> If CP is present, find the nearest test station. Record the pipe-to-soil potential reading. A reading more negative than -850mV is typically considered protected. Note the condition of all visible CP components.</li>
+            </ul>
+
+            <h4>7. Pipe Condition Assessment</h4>
+            <p>Directly inspect the pipe steel/material itself.</p>
+            <ul>
+                <li><strong>Physical Damage:</strong> Look for any dents, gouges, or scrapes from third-party contact or debris. Describe location and size.</li>
+                <li><strong>Atmospheric Corrosion:</strong> If pipe steel is exposed, describe the extent and severity of any atmospheric corrosion.</li>
+            </ul>
+            
+            <h4>8. Clearances and Measurements</h4>
+            <p>Verify the pipeline's position relative to its surroundings.</p>
+            <ul>
+                <li><strong>Clearance Checks:</strong> Measure key clearances and record them in the comments. Note any that do not meet company or regulatory standards.</li>
+            </ul>
+
+            <h4>9. Access and Safety</h4>
+            <p>Evaluate the safety of the site for current and future work.</p>
+            <ul>
+                <li><strong>Hazards & Access:</strong> Document any immediate safety hazards. Assess the condition of any permanent access structures like ladders or walkways. Comment on the general ease or difficulty of accessing the pipeline.</li>
+            </ul>
+            
+            <h4>10. Documentation</h4>
+            <p>Upload the visual evidence collected during the inspection.</p>
+            <ul>
+                <li><strong>Photographs:</strong> Upload all relevant photos. Use the comment field for each photo to add a descriptive caption (e.g., "Upstream view of crossing," "Corrosion on support #3").</li>
+                <li><strong>Other Documents:</strong> Upload any relevant documents, such as previous inspection reports or sketches made on-site.</li>
+            </ul>
+            
+            <h4>11. Third-Party Infrastructure and General Observations</h4>
+            <p>Note any other factors that could impact the pipeline.</p>
+            <ul>
+                <li><strong>Other Utilities & Bridge Condition:</strong> Document other utilities on the bridge. Note any major defects in the bridge structure itself that could eventually affect the pipeline.</li>
+                <li><strong>Third-Party Damage:</strong> Assess the potential for future damage from vandalism, or other activities.</li>
+            </ul>
+            
+            <h4>12. Recommendations and Final Evaluation</h4>
+            <p>Synthesize findings into actionable recommendations.</p>
+            <ul>
+                <li><strong>Immediate Hazards:</strong> Clearly list anything requiring immediate attention. Document who was notified and when.</li>
+                <li><strong>Recommendation Priority:</strong> Assign a priority level to guide maintenance scheduling. This is a critical output of the assessment.</li>
+                <li><strong>Summary of Recommendations:</strong> List clear, actionable recommendations (e.g., "Repair coating at support #3," "Clear vegetation from east abutment").</li>
+                <li><strong>Final Summary:</strong> Provide a brief, high-level summary of the overall condition of the pipeline crossing. This will be automatically enhanced by the AI during report generation.</li>
+            </ul>`;
+    }
+
+    function handleSaveAssessment() {
+        const formData = getFormData();
+        formData['fileData'] = fileDataStore;
+
+        const dataStr = JSON.stringify(formData, null, 2);
+        const blob = new Blob([dataStr], { type: 'application/json' });
+        const url = URL.createObjectURL(blob);
+        const a = document.createElement('a');
+        a.href = url;
+        const date = new Date().toISOString().split('T')[0];
+        a.download = `pipeline-assessment-${formData['crossing-id'] || 'untitled'}-${date}.json`;
+        document.body.appendChild(a);
+        a.click();
+        document.body.removeChild(a);
+        URL.revokeObjectURL(url);
+    }
+
+    function handleOpenAssessment() {
+        openFileInput.click();
+    }
+
+    function loadAssessmentFile(event: Event) {
+        const file = (event.target as HTMLInputElement).files?.[0];
+        if (file) {
+            const reader = new FileReader();
+            reader.onload = (e) => {
+                try {
+                    const data = JSON.parse(e.target?.result as string);
+                    populateFormWithData(data);
+                } catch (error) {
+                    console.error("Error parsing assessment file:", error);
+                    alert("Could not open the assessment file. It may be corrupted or in the wrong format.");
+                }
+            };
+            reader.readAsText(file);
+        }
+        // Reset file input to allow opening the same file again
+        openFileInput.value = "";
+    }
+    
+    function populateFormWithData(data: { [key: string]: any }) {
+        Object.keys(data).forEach(key => {
+            if (key === 'fileData') {
+                const loadedFileData = data[key];
+                Object.keys(loadedFileData).forEach(inputId => {
+                    fileDataStore[inputId] = loadedFileData[inputId];
+                    renderFileList(inputId);
+                });
+                return;
+            }
+            
+            const element = document.getElementById(key) as HTMLInputElement | HTMLSelectElement | HTMLTextAreaElement;
+            if (element) {
+                if ((element as HTMLInputElement).type === 'radio') {
+                    // Handled by name below
+                } else if ((element as HTMLInputElement).type === 'checkbox') {
+                    // Handled by name below
+                } else {
+                    element.value = data[key];
+                     if (element.tagName === 'TEXTAREA') {
+                       setTimeout(() => autoResizeTextarea(element as HTMLTextAreaElement), 0);
+                    }
                 }
             }
+            
+            // Handle radio and checkbox groups by name
+            const elementsByName = document.getElementsByName(key);
+            if (elementsByName.length > 0) {
+                const firstEl = elementsByName[0] as HTMLInputElement;
+                if (firstEl.type === 'radio') {
+                    for (const el of Array.from(elementsByName) as HTMLInputElement[]) {
+                        if (el.value === data[key]) {
+                            el.checked = true;
+                            break;
+                        }
+                    }
+                } else if (firstEl.type === 'checkbox') {
+                    const values = Array.isArray(data[key]) ? data[key] : [];
+                    for (const el of Array.from(elementsByName) as HTMLInputElement[]) {
+                       el.checked = values.includes(el.value);
+                    }
+                }
+            }
+        });
+        handleDocChange(); // Ensure conditional fields are updated after loading
+    }
+    
+    function generateTextSummaryForAI(formData: { [key: string]: any }): string {
+        let summary = "Assessment Data Summary:\n";
+        formSections.forEach(section => {
+            summary += `\n--- ${section.title} ---\n`;
+            section.fields.forEach(field => {
+                if (field.type === 'file') return;
+                
+                let valueKey = field.id;
+                // For conditional system dropdowns, find the one that has a value.
+                 if (field.containerId) {
+                    const docSelectValue = formData['doc-select'];
+                    const expectedContainerId = `${docSelectValue}-system-select-container`;
+                     if (field.containerId !== expectedContainerId) {
+                        return; // Skip non-active conditional fields
+                    }
+                }
+
+                const rawValue = formData[valueKey];
+                if (rawValue !== undefined && rawValue !== null && rawValue !== '') {
+                    let displayValue: string;
+                     if(Array.isArray(rawValue)) {
+                        displayValue = rawValue.join(', ');
+                    } else if (field.type === 'select' && field.options) {
+                        const selectedOption = field.options.find(opt => opt.value === String(rawValue));
+                        displayValue = selectedOption ? selectedOption.text : String(rawValue);
+                    } else {
+                        displayValue = String(rawValue);
+                    }
+
+                    if (displayValue) {
+                       summary += `${field.label}: ${displayValue}\n`;
+                    }
+                }
+
+                if(field.assessmentOptions) {
+                    const assessmentKey = `${field.id}-assessment`;
+                    const assessmentValue = formData[assessmentKey];
+                    if (assessmentValue) {
+                        summary += `${field.label} (Source): ${assessmentValue}\n`;
+                    }
+                }
+            });
+        });
+        
+        // Add file comments
+        summary += "\n--- Attached File Comments ---\n";
+        Object.keys(fileDataStore).forEach(inputId => {
+           if (fileDataStore[inputId].length > 0) {
+               summary += `${inputId}:\n`;
+               fileDataStore[inputId].forEach(file => {
+                   summary += `- ${file.name}: ${file.comment || 'No comment'}\n`;
+               });
+           }
+        });
+
+        return summary;
+    }
+
+    async function handleGenerateReport() {
+        const loadingOverlay = document.getElementById('loading-overlay') as HTMLElement;
+        const loadingText = document.getElementById('loading-text') as HTMLElement;
+        const modal = document.getElementById('summary-review-modal') as HTMLElement;
+        const execSummaryTextarea = document.getElementById('modal-exec-summary') as HTMLTextAreaElement;
+        const finalSummaryTextarea = document.getElementById('modal-final-summary') as HTMLTextAreaElement;
+        
+        loadingText.textContent = "Generating...";
+        loadingOverlay.style.display = 'flex';
+
+        const formData = getFormData();
+        const textSummary = generateTextSummaryForAI(formData);
+
+        // 2. Generate summaries with AI
+        const ai = new GoogleGenAI({ apiKey: API_KEY });
+        const execSummaryPrompt = `Based on the following pipeline bridge crossing assessment data, write a concise, professional Executive Summary suitable for the first page of an engineering report. Focus on the overall condition, any immediate or high-priority findings, and the general recommendation. Data:\n${textSummary}`;
+        const finalSummaryPrompt = `Based on the following pipeline bridge crossing assessment data, write a comprehensive "Final Summary of Evaluation". This should synthesize all key findings from the report into a detailed concluding paragraph. Data:\n${textSummary}`;
+
+        const promises = [
+            ai.models.generateContent({ model: 'gemini-2.5-flash-preview-04-17', contents: execSummaryPrompt }),
+            ai.models.generateContent({ model: 'gemini-2.5-flash-preview-04-17', contents: finalSummaryPrompt })
+        ];
+
+        const [execResult, finalResult] = await Promise.allSettled(promises);
+
+        loadingOverlay.style.display = 'none';
+
+        // 3. Populate and show modal
+        execSummaryTextarea.value = (execResult.status === 'fulfilled') 
+            ? execResult.value.text 
+            : `Warning: Could not connect to the AI service to generate summary. Please write it manually.`;
+
+        finalSummaryTextarea.value = (finalResult.status === 'fulfilled') 
+            ? finalResult.value.text 
+            : `Warning: Could not connect to the AI service to generate summary. Please write it manually.`;
+        
+        autoResizeTextarea(execSummaryTextarea);
+        autoResizeTextarea(finalSummaryTextarea);
+
+        modal.style.display = 'flex';
+        
+        // Add improve buttons if admin
+        if (document.body.classList.contains('voice-enabled')) {
+            addImproveButton(document.getElementById('modal-exec-summary-wrapper')!, execSummaryTextarea);
+            addImproveButton(document.getElementById('modal-final-summary-wrapper')!, finalSummaryTextarea);
+        }
+
+        const modalGeneratePdfButton = document.getElementById('modal-generate-pdf-button')!;
+        const modalCancelButton = document.getElementById('modal-cancel-button')!;
+        
+        const newGenerateButton = modalGeneratePdfButton.cloneNode(true);
+        modalGeneratePdfButton.parentNode!.replaceChild(newGenerateButton, modalGeneratePdfButton);
+        
+        const newCancelButton = modalCancelButton.cloneNode(true);
+        modalCancelButton.parentNode!.replaceChild(newCancelButton, modalCancelButton);
+
+
+        const generatePdfHandler = () => {
+            modal.style.display = 'none';
+            buildPdfDocument(formData, execSummaryTextarea.value, finalSummaryTextarea.value);
         };
 
-        adminUnlockButton.addEventListener('click', unlockVoiceFeature);
-
-        adminPasswordInput.addEventListener('keypress', (event) => {
-            if (event.key === 'Enter') {
-                event.preventDefault(); // Stop form submission or other default behavior
-                unlockVoiceFeature();
-            }
-        });
-
-        // Reset visual feedback on focus
-        adminPasswordInput.addEventListener('focus', () => {
-            adminPasswordInput.style.borderColor = '';
-            adminPasswordInput.placeholder = 'Code';
-        });
+        const cancelHandler = () => {
+            modal.style.display = 'none';
+        };
+        
+        newGenerateButton.addEventListener('click', generatePdfHandler);
+        newCancelButton.addEventListener('click', cancelHandler);
     }
+    
+    function buildPdfDocument(formData: { [key: string]: any }, execSummary: string, finalSummary: string) {
+        const loadingOverlay = document.getElementById('loading-overlay') as HTMLElement;
+        const loadingText = document.getElementById('loading-text') as HTMLElement;
+        loadingText.textContent = "Generating...";
+        loadingOverlay.style.display = 'flex';
 
-    if (fileInput) {
-        fileInput.addEventListener('change', (event) => {
-            const file = (event.target as HTMLInputElement).files?.[0];
-            if (file) {
-                const reader = new FileReader();
-                reader.onload = (e) => {
-                    try {
-                        const fileContent = e.target?.result as string;
-                        if (!fileContent) {
-                             alert('Error: File content is empty.');
-                             return;
-                        }
-                        const jsonData = JSON.parse(fileContent);
-                        populateFormWithData(jsonData);
-                    } catch (error) {
-                        console.error('Error parsing JSON file:', error);
-                        alert('Error: Could not parse the selected file. Please ensure it is a valid JSON assessment file.');
-                    } finally {
-                        fileInput.value = '';
+        try {
+            const { jsPDF } = window.jspdf;
+            const doc = new jsPDF();
+
+            const pageWidth = doc.internal.pageSize.getWidth();
+            const pageHeight = doc.internal.pageSize.getHeight();
+            const margin = 15;
+            let cursorY = margin;
+            
+            formData['final-summary-evaluation'] = finalSummary;
+
+            const addHeaderFooter = () => {
+                const pageCount = doc.internal.getNumberOfPages();
+                for (let i = 1; i <= pageCount; i++) {
+                    doc.setPage(i);
+                    doc.setFont('helvetica', 'normal');
+                    doc.setFontSize(10);
+                    if (i > 1) { // Add a header to all pages except the first title page
+                        doc.text('UNITIL Pipeline Bridge Crossing Assessment Report', margin, margin - 5);
                     }
-                };
-                reader.onerror = () => {
-                    alert('Error reading file.');
-                    fileInput.value = '';
+                    doc.text(`Page ${i} of ${pageCount}`, pageWidth - margin, pageHeight - 10, { align: 'right' });
                 }
-                reader.readAsText(file);
-            }
-        });
-    }
-});
+            };
+            
+            // --- Title Page ---
+            doc.setFontSize(22);
+            doc.setFont('helvetica', 'bold');
+            doc.text('UNITIL Pipeline Bridge Crossing Assessment Report', pageWidth / 2, cursorY, { align: 'center' });
+            cursorY += 20;
 
-export {};
+            // Find DOC display text
+            const docField = formSections.find(s => s.id === 'general-info')?.fields.find(f => f.id === 'doc-select');
+            const docValue = formData['doc-select'];
+            const docText = docField?.options?.find(opt => opt.value === docValue)?.text || 'N/A';
+
+            doc.setFontSize(12);
+            doc.setFont('helvetica', 'normal');
+            doc.text(`Crossing ID: ${formData['crossing-id'] || 'N/A'}`, margin, cursorY);
+            cursorY += 7;
+            doc.text(`Bridge Name: ${formData['bridge-name'] || 'N/A'}`, margin, cursorY);
+            cursorY += 7;
+            doc.text(`Town/City: ${formData['town-city'] || 'N/A'}`, margin, cursorY);
+            cursorY += 7;
+            doc.text(`District Operating Center: ${docText}`, margin, cursorY);
+            cursorY += 7;
+            doc.text(`Date of Assessment: ${formData['date-of-assessment'] || 'N/A'}`, margin, cursorY);
+            cursorY += 7;
+            doc.text(`Assessed By: ${formData['assessment-by'] || 'N/A'}`, margin, cursorY);
+            cursorY += 15;
+
+            doc.setFontSize(16);
+            doc.setFont('helvetica', 'bold');
+            doc.text('Executive Summary', margin, cursorY);
+            cursorY += 8;
+
+            doc.setFontSize(11);
+            doc.setFont('helvetica', 'normal');
+            const summaryLines = doc.splitTextToSize(execSummary, pageWidth - margin * 2);
+            doc.text(summaryLines, margin, cursorY);
+
+            // --- Data Table Page(s) ---
+            doc.addPage();
+            
+            const reportData: (string | { content: string; styles: { fontStyle: 'bold' } })[][] = [];
+            formSections.forEach(section => {
+                let sectionHasContent = false;
+                const sectionRows: any[][] = [];
+
+                section.fields.forEach(field => {
+                    if (field.type === 'file') return;
+                    
+                    let valueKey = field.id;
+                    let displayValue = 'Not provided';
+                    
+                    if (field.containerId) {
+                        const docSelectValue = formData['doc-select'];
+                        const expectedContainerId = `${docSelectValue}-system-select-container`;
+                        if (field.containerId !== expectedContainerId) {
+                            return; // Skip non-active conditional fields
+                        }
+                    }
+
+                    const value = formData[valueKey];
+                    
+                    if (value !== undefined && value !== null && value !== '' && (!Array.isArray(value) || value.length > 0) ) {
+                        const rawValueString = Array.isArray(value) ? value.join(', ') : String(value);
+
+                        if (field.type === 'select' && field.options) {
+                           // For system dropdowns, value is "Text|MAOP", so extract text part
+                            if(rawValueString.includes('|')) {
+                                displayValue = rawValueString.split('|')[0];
+                            } else {
+                                const selectedOption = field.options.find(opt => opt.value === rawValueString);
+                                displayValue = selectedOption ? selectedOption.text : rawValueString;
+                            }
+                        } else {
+                            displayValue = rawValueString;
+                        }
+                        sectionHasContent = true;
+                    }
+
+                    if(displayValue !== 'Not provided' || !field.containerId){
+                       sectionRows.push([field.label, displayValue]);
+                    }
+                    
+                    if(field.assessmentOptions) {
+                        const assessmentKey = `${field.id}-assessment`;
+                        const assessmentValue = formData[assessmentKey];
+                        if (assessmentValue) {
+                            sectionRows.push([`${field.label} (Source)`, assessmentValue]);
+                            sectionHasContent = true;
+                        }
+                    }
+                });
+                
+                if(sectionHasContent) {
+                    reportData.push([{ content: section.title, styles: { fontStyle: 'bold' } }]);
+                    reportData.push(...sectionRows);
+                }
+            });
+
+            (doc as any).autoTable({
+                startY: margin,
+                head: [['Field', 'Value']],
+                body: reportData,
+                theme: 'grid',
+                headStyles: { fillColor: [0, 90, 156] },
+                columnStyles: {
+                    0: { halign: 'left' }, // Align 'Field' column to the left
+                },
+                didParseCell: function (data: any) {
+                    if (data.row.raw.length === 1) {
+                        data.cell.styles.fontStyle = 'bold';
+                        data.cell.styles.fillColor = '#eef1f5';
+                        data.cell.styles.textColor = '#003366';
+                        data.cell.colSpan = 2;
+                        data.cell.styles.halign = 'left';
+                    }
+                }
+            });
+            
+            doc.setFont('helvetica', 'normal');
+
+            // --- Photographs Page(s) ---
+            const imageFiles = [...(fileDataStore['photographs'] || []), ...(fileDataStore['other-docs'] || [])]
+                .filter(file => file && (file.type === 'image/jpeg' || file.type === 'image/png'));
+
+            if (imageFiles.length > 0) {
+                doc.addPage();
+                let photoY = margin;
+
+                doc.setFontSize(16);
+                doc.setFont('helvetica', 'bold');
+                doc.text('Photographs and Attachments', margin, photoY);
+                photoY += 10;
+                
+                imageFiles.forEach((file) => {
+                    const imgWidth = 120;
+                    const imgHeight = (imgWidth / 4) * 3;
+                    const spacing = 10;
+
+                    if (photoY + imgHeight + spacing > pageHeight - margin) {
+                        doc.addPage();
+                        photoY = margin;
+                    }
+                    
+                    doc.addImage(file.dataUrl, file.type.split('/')[1].toUpperCase(), margin, photoY, imgWidth, imgHeight);
+                    
+                    if (file.comment) {
+                        doc.setFontSize(9);
+                        doc.setFont('helvetica', 'italic');
+                        const commentLines = doc.splitTextToSize(file.comment, imgWidth);
+                        doc.text(commentLines, margin, photoY + imgHeight + 4);
+                        doc.setFont('helvetica', 'normal'); // Reset font style
+                        photoY += (commentLines.length * 4);
+                    }
+                    
+                    photoY += imgHeight + spacing;
+                });
+            }
+
+            addHeaderFooter();
+            
+            const date = new Date().toISOString().split('T')[0];
+            doc.save(`pipeline-assessment-report-${formData['crossing-id'] || 'untitled'}-${date}.pdf`);
+
+        } catch (error) {
+            console.error("Failed to generate report:", error);
+            alert("An unexpected error occurred while generating the PDF. Please check the console for details.");
+        } finally {
+            loadingOverlay.style.display = 'none';
+        }
+    }
+
+
+    function handleExampleAssessment() {
+        const exampleData = {
+            "date-of-assessment": new Date().toISOString().substring(0, 10),
+            "assessment-by": "Dana Argo",
+            "doc-select": "nu-nh",
+            "crossing-id": "Ocean Road Bridge",
+            "town-city": "Hampton, NH",
+            "crossing-description": "Pipeline is attached to the west side of the Ocean Road bridge, crossing the Hampton River.",
+            "gps-lat": "42.9115° N",
+            "gps-lon": "70.8123° W",
+            "road-name": "Ocean Road",
+            "feature-crossed": "Hampton River",
+            "bridge-name": "Ocean Road Bridge",
+            "bridge-number": "B-12-005",
+            "bridge-type": "girder",
+            "bridge-material": "steel",
+            "ambient-temp": "68",
+            "weather-conditions": "Clear and sunny, light breeze from the west.",
+            "vegetation-growth": "Minor grass and weeds observed at the north abutment, well clear of supports.",
+            "scour-erosion": "No significant scour was observed. Riverbed appears stable around piers.",
+            "proximity-water": "Pipeline is approximately 20 feet above the mean high water mark.",
+            "debris-accumulation": "No debris was found on or around pipeline supports.",
+            "nu-nh-system-select": "Seacoast IP|60",
+            "maop": "60",
+            "pipe-diameter": "8",
+            "wall-thickness": "0.322",
+            "pipe-material": "steel",
+            "installation-temp": "60",
+            "installation-temp-assessment": "Assumed",
+            "support-method": "hangers",
+            "support-condition-thermal-stress-comments": "No signs of thermal stress. Hangers appear to be in good condition.",
+            "pipe-movement-at-supports-comments": "Pipe appears to be adequately supported with no undue restrictions.",
+            "sliding-roller-functionality-comments": "N/A",
+            "support-comments": "All U-bolts and fasteners are tight. No significant corrosion noted on supports.",
+            "expansion-feature": "pipe_flexibility",
+            "expansion-feature-functionality-comments": "The long, sweeping bend on the north approach appears to be providing adequate thermal expansion capability.",
+            "expansion-comments": "Overall accommodation for thermal movement appears satisfactory.",
+            "coating-type": "fbe",
+            "coating-comments": "Coating is in excellent condition. No holidays or damage found during visual inspection.",
+            "cp-present": "yes",
+            "cp-test-station": "yes",
+            "cp-potential": "-1150",
+            "cp-comments": "Test station located on the north abutment is in good condition. Wires are secure. P/S potential is well within acceptable limits.",
+            "pipe-physical-damage": "No physical damage was observed on the pipeline.",
+            "atmospheric-corrosion-details": "No atmospheric corrosion was observed.",
+            "clearance-checks": ["vertical-water", "horizontal-abutment"],
+            "clearance-comments": "Vertical clearance from high water is approximately 20 feet. Clearance from abutments is > 5 feet.",
+            "safety-hazards": "Moderate vehicle traffic on the bridge deck. No fall protection railings on the west side where the pipe is located.",
+            "access-structures-condition": "N/A - no permanent access structures.",
+            "access-safety-comments": "Access requires lane closure and fall protection equipment.",
+            "other-utilities-bridge": "A conduit for telecommunications is also attached to the west side, approximately 3 feet below the gas line.",
+            "bridge-structure-condition": "The bridge structure appears to be in good condition with no major spalling or rust noted.",
+            "third-party-damage-potential": "Low potential for third-party damage due to pipeline elevation.",
+            "third-party-comments": "Telecom conduit is well-secured.",
+            "immediate-hazards": "None identified.",
+            "actions-taken-hazards": "N/A",
+            "recommendation-priority": "low",
+            "recommendations-summary": "Recommend standard monitoring per inspection schedule. No immediate actions required.",
+            "final-summary-evaluation": "The pipeline at this crossing is in excellent condition with no immediate concerns. The support system, coating, and cathodic protection are all functioning as intended. The primary recommendation is to continue routine inspections."
+        };
+        populateFormWithData(exampleData);
+    }
+    
+    function handleAdminUnlock() {
+        const password = adminPasswordInput.value;
+        if (password === "0665") {
+            document.body.classList.add('voice-enabled');
+            const successMessage = document.createElement('span');
+            successMessage.className = 'unlocked-message';
+            successMessage.textContent = 'Voice Feature Unlocked';
+            adminUnlockContainer.innerHTML = '';
+            adminUnlockContainer.appendChild(successMessage);
+        } else {
+            adminPasswordInput.style.borderColor = 'red';
+            adminPasswordInput.value = '';
+            adminPasswordInput.placeholder = 'Incorrect';
+            setTimeout(() => {
+                adminPasswordInput.style.borderColor = '';
+                adminPasswordInput.placeholder = 'Code';
+            }, 2000);
+        }
+    }
+
+
+    // --- Event Listeners ---
+    saveButton.addEventListener('click', handleSaveAssessment);
+    openButton.addEventListener('click', handleOpenAssessment);
+    openFileInput.addEventListener('change', loadAssessmentFile);
+    generateReportButton.addEventListener('click', handleGenerateReport);
+    exampleButton.addEventListener('click', handleExampleAssessment);
+    
+    adminUnlockButton.addEventListener('click', handleAdminUnlock);
+    adminPasswordInput.addEventListener('keypress', (e) => {
+        if (e.key === 'Enter') {
+            handleAdminUnlock();
+        }
+    });
+
+    tabForm.addEventListener('click', () => {
+        tabForm.classList.add('active');
+        tabProcess.classList.remove('active');
+        tabForm.setAttribute('aria-selected', 'true');
+        tabProcess.setAttribute('aria-selected', 'false');
+        formContainer.style.display = 'block';
+        processContainer.style.display = 'none';
+    });
+    tabProcess.addEventListener('click', () => {
+        tabProcess.classList.add('active');
+        tabForm.classList.remove('active');
+        tabProcess.setAttribute('aria-selected', 'true');
+        tabForm.setAttribute('aria-selected', 'false');
+        processContainer.style.display = 'block';
+        formContainer.style.display = 'none';
+    });
+
+    // --- Initial Population ---
+    populateForm();
+    populateProcessGuidelines();
+});
