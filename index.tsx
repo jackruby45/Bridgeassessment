@@ -1576,49 +1576,62 @@ document.addEventListener('DOMContentLoaded', () => {
         const formData = getFormData();
         const fullTextSummary = generateTextSummaryForAI(formData);
 
-        // --- AI Generation ---
+        // --- AI Generation (Consolidated into a single call) ---
         const ai = new GoogleGenAI({ apiKey: apiKey });
 
-        const execSummaryPrompt = `Based on the following pipeline bridge crossing assessment data, write a concise, professional Executive Summary suitable for the first page of an engineering report. Focus on the overall condition, any immediate or high-priority findings, and the general recommendation. Data:\n${fullTextSummary}`;
-        const finalSummaryPrompt = `Based on the following pipeline bridge crossing assessment data, write a comprehensive "Final Summary of Evaluation". This should synthesize all key findings from the report into a detailed concluding paragraph. Data:\n${fullTextSummary}`;
-        
         const sectionTitles = formSections.map(s => s.title);
-        const sectionSummariesPrompt = `Based on the full assessment data below, provide a single-sentence summary for each section title provided. Return a JSON object where each key is an exact section title and the value is its summary. If a section has no relevant data or findings, return an empty string for its value. Section titles: ${JSON.stringify(sectionTitles)}. Full Data: \n${fullTextSummary}`;
+        const combinedPrompt = `Based on the following pipeline bridge crossing assessment data, generate content for an engineering report. Provide the output as a single JSON object with three top-level keys: "executiveSummary", "finalSummary", and "sectionSummaries".
 
-        const promises = [
-            ai.models.generateContent({ model: 'gemini-2.5-flash-preview-04-17', contents: execSummaryPrompt }),
-            ai.models.generateContent({ model: 'gemini-2.5-flash-preview-04-17', contents: finalSummaryPrompt }),
-            ai.models.generateContent({ model: 'gemini-2.5-flash-preview-04-17', contents: sectionSummariesPrompt, config: { responseMimeType: 'application/json' }})
-        ];
+1.  "executiveSummary": A concise, professional executive summary suitable for the first page of the report. Focus on the overall condition, any immediate or high-priority findings, and the general recommendation.
+2.  "finalSummary": A comprehensive "Final Summary of Evaluation". This should synthesize all key findings from the report into a detailed concluding paragraph.
+3.  "sectionSummaries": A JSON object where each key is an exact section title from the provided list and the value is a single-sentence summary for that section. If a section has no relevant data or findings, return an empty string for its value.
 
-        const [execResult, finalResult, sectionSummariesResult] = await Promise.allSettled(promises);
+Section titles list: ${JSON.stringify(sectionTitles)}
+
+Full Assessment Data:
+${fullTextSummary}`;
+
+        let execSummary = 'Warning: Could not connect to the AI service to generate summary. Please write it manually.';
+        let finalSummary = 'Warning: Could not connect to the AI service to generate summary. Please write it manually.';
+        let sectionSummaries: { [key: string]: string } = {};
+
+        try {
+            const response = await ai.models.generateContent({
+                model: 'gemini-2.5-flash-preview-04-17',
+                contents: combinedPrompt,
+                config: { responseMimeType: 'application/json' }
+            });
+
+            let jsonStr = response.text.trim();
+            const fenceRegex = /^```(\w*)?\s*\n?(.*?)\n?\s*```$/s;
+            const match = jsonStr.match(fenceRegex);
+            if (match && match[2]) {
+                jsonStr = match[2].trim();
+            }
+            
+            const parsedData = JSON.parse(jsonStr);
+            
+            if (parsedData.executiveSummary && typeof parsedData.executiveSummary === 'string') {
+                execSummary = parsedData.executiveSummary;
+            }
+            if (parsedData.finalSummary && typeof parsedData.finalSummary === 'string') {
+                finalSummary = parsedData.finalSummary;
+            }
+            if (parsedData.sectionSummaries && typeof parsedData.sectionSummaries === 'object') {
+                sectionSummaries = parsedData.sectionSummaries;
+            }
+
+        } catch (error) {
+            console.error("Error generating report summaries:", error);
+            // The default warning messages will be used. The user will be able to see the error in the console.
+        }
 
         loadingOverlay.style.display = 'none';
 
         // --- Populate Modal ---
-        execSummaryTextarea.value = (execResult.status === 'fulfilled') 
-            ? execResult.value.text 
-            : `Warning: Could not connect to the AI service to generate summary. Please write it manually.`;
-
-        finalSummaryTextarea.value = (finalResult.status === 'fulfilled') 
-            ? finalResult.value.text 
-            : `Warning: Could not connect to the AI service to generate summary. Please write it manually.`;
+        execSummaryTextarea.value = execSummary;
+        finalSummaryTextarea.value = finalSummary;
             
-        let sectionSummaries: { [key: string]: string } = {};
-        if (sectionSummariesResult.status === 'fulfilled') {
-            try {
-                let jsonStr = sectionSummariesResult.value.text.trim();
-                const fenceRegex = /^```(\w*)?\s*\n?(.*?)\n?\s*```$/s;
-                const match = jsonStr.match(fenceRegex);
-                if (match && match[2]) {
-                  jsonStr = match[2].trim();
-                }
-                sectionSummaries = JSON.parse(jsonStr);
-            } catch (e) {
-                console.error("Failed to parse section summaries JSON:", e);
-            }
-        }
-        
         autoResizeTextarea(execSummaryTextarea);
         autoResizeTextarea(finalSummaryTextarea);
 
@@ -1656,7 +1669,7 @@ document.addEventListener('DOMContentLoaded', () => {
     async function buildPdfDocument(formData: { [key: string]: any }, execSummary: string, finalSummary: string, sectionSummaries: { [key: string]: string }) {
         const loadingOverlay = document.getElementById('loading-overlay') as HTMLElement;
         const loadingText = document.getElementById('loading-text') as HTMLElement;
-        loadingText.textContent = "Generating...";
+        loadingText.textContent = "Generating PDF...";
         loadingOverlay.style.display = 'flex';
 
         try {
@@ -1715,10 +1728,9 @@ document.addEventListener('DOMContentLoaded', () => {
             const summaryLines = doc.splitTextToSize(execSummary, pageWidth - margin * 2);
             doc.text(summaryLines, margin, cursorY);
             
-            doc.addPage();
-            
             // --- Data Table Page(s) ---
             const tocEntries: {title: string, page: number, summary?: string}[] = [];
+            tocEntries.push({ title: 'Executive Summary', page: 1 }); // Add title page to TOC
             const reportData: (string | { content: string; styles: { fontStyle: 'bold' | 'normal' | 'italic', halign?: 'left' | 'center' | 'right' } })[][] = [];
 
             formSections.forEach(section => {
@@ -1793,6 +1805,9 @@ document.addEventListener('DOMContentLoaded', () => {
                 }
             });
 
+            doc.addPage(); // This is page 2, reserved for the Table of Contents.
+            doc.addPage(); // This is page 3, where the autoTable content will begin.
+            
             (doc as any).autoTable({
                 startY: margin,
                 head: [['Field', 'Value']],
@@ -1812,7 +1827,7 @@ document.addEventListener('DOMContentLoaded', () => {
                         if (!tocEntries.some(e => e.title === currentTitle)) {
                             tocEntries.push({
                                 title: currentTitle,
-                                page: doc.internal.getCurrentPageInfo().pageNumber,
+                                page: doc.internal.getCurrentPageInfo().pageNumber, // Page number is now correct
                                 summary: sectionSummaries[currentTitle] || ''
                             });
                         }
@@ -1829,7 +1844,7 @@ document.addEventListener('DOMContentLoaded', () => {
             if (imageFiles.length > 0) {
                 doc.addPage();
                 const photosStartPage = doc.internal.getCurrentPageInfo().pageNumber;
-                tocEntries.push({ title: 'Photographs and Attachments', page: photosStartPage});
+                tocEntries.push({ title: 'Photographs and Attachments', page: photosStartPage}); // Corrected page number
                 let photoY = margin;
 
                 doc.setFontSize(16);
@@ -1868,7 +1883,8 @@ document.addEventListener('DOMContentLoaded', () => {
                 });
             }
             
-            // --- Go back and write the Table of Contents on page 2 ---
+            // --- Final assembly: Draw TOC on reserved page ---
+            // The buggy and complex page-shuffling logic is removed.
             doc.setPage(2);
             let tocY = margin;
             doc.setFontSize(16);
@@ -1893,57 +1909,9 @@ document.addEventListener('DOMContentLoaded', () => {
             });
 
             addHeaderFooter();
-            doc.deletePage(1); // Delete the original blank page 1
-            if (doc.internal.getNumberOfPages() > 1 && tocEntries.length > 0) {
-                 doc.deletePage(1); // Delete the original title page, now we will re-insert it
-            }
-            const tempDoc = new jsPDF();
-            tempDoc.addPage();
-            tempDoc.deletePage(2);
-            // Rebuild title page
-            cursorY = margin;
-            tempDoc.setFontSize(22);
-            tempDoc.setFont('helvetica', 'bold');
-            tempDoc.text('UNITIL Pipeline Bridge Crossing Assessment Report', pageWidth / 2, cursorY, { align: 'center' });
-            cursorY += 20;
-            tempDoc.setFontSize(12);
-            tempDoc.setFont('helvetica', 'normal');
-            tempDoc.text(`Crossing ID: ${formData['crossing-id'] || 'N/A'}`, margin, cursorY);
-            cursorY += 7;
-            tempDoc.text(`Bridge Name: ${formData['bridge-name'] || 'N/A'}`, margin, cursorY);
-            cursorY += 7;
-            tempDoc.text(`Town/City: ${formData['town-city'] || 'N/A'}`, margin, cursorY);
-            cursorY += 7;
-            tempDoc.text(`District Operating Center: ${docText}`, margin, cursorY);
-            cursorY += 7;
-            tempDoc.text(`Date of Assessment: ${formData['date-of-assessment'] || 'N/A'}`, margin, cursorY);
-            cursorY += 7;
-            tempDoc.text(`Assessed By: ${formData['assessment-by'] || 'N/A'}`, margin, cursorY);
-            cursorY += 15;
-            tempDoc.setFontSize(16);
-            tempDoc.setFont('helvetica', 'bold');
-            tempDoc.text('Executive Summary', margin, cursorY);
-            cursorY += 8;
-            tempDoc.setFontSize(11);
-            tempDoc.setFont('helvetica', 'normal');
-            const finalSummaryLines = tempDoc.splitTextToSize(execSummary, pageWidth - margin * 2);
-            tempDoc.text(finalSummaryLines, margin, cursorY);
-            
-            // This is a workaround to insert pages at the beginning
-            const pageCount = doc.internal.getNumberOfPages();
-            for(let i = pageCount; i >= 1; i--) {
-                const pageData = doc.internal.pages[i];
-                tempDoc.addPage(pageData.width, pageData.height);
-                const newPage = tempDoc.internal.pages[tempDoc.internal.getNumberOfPages()];
-                // Manually copy page content
-                newPage.forEach(op => tempDoc.internal.write(op));
-            }
-            tempDoc.deletePage(1); // Delete blank page
-
-            addHeaderFooter.call({internal: tempDoc.internal}); // Call addHeaderFooter in the context of the new doc
 
             const date = new Date().toISOString().split('T')[0];
-            tempDoc.save(`pipeline-assessment-report-${formData['crossing-id'] || 'untitled'}-${date}.pdf`);
+            doc.save(`pipeline-assessment-report-${formData['crossing-id'] || 'untitled'}-${date}.pdf`);
 
         } catch (error) {
             console.error("Failed to generate report:", error);
