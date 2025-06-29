@@ -24,18 +24,29 @@
             <h1>UNITIL Natural Gas Pipeline Bridge Crossing Assessment Tool</h1>
         </header>
 
-        <div id="file-controls">
+        <div id="controls-top-row" class="controls-row">
             <button id="save-assessment-button" class="control-button">Save Assessment</button>
             <button id="open-assessment-button" class="control-button">Open Assessment</button>
             <button id="generate-report-button" class="control-button">Generate Report</button>
             <button id="example-assessment-button" class="control-button">Example Assessment</button>
             <input type="file" id="open-file-input" style="display: none;" accept=".json">
+        </div>
+        
+        <div id="controls-bottom-row" class="controls-row">
+            <div id="api-key-container">
+                <label for="api-key-input">Google AI API Key</label>
+                <div class="input-with-toggle">
+                    <input type="password" id="api-key-input" placeholder="Enter your key from AI Studio">
+                    <button type="button" id="api-key-toggle">Show</button>
+                </div>
+            </div>
             <div id="admin-unlock-container">
                 <label for="admin-password">ADMIN</label>
                 <input type="password" id="admin-password" placeholder="Code">
                 <button type="button" id="admin-unlock-button">Unlock</button>
             </div>
         </div>
+
 
         <nav id="tab-navigation">
             <button id="tab-form" class="tab-button active" aria-selected="true">Assessment Form</button>
