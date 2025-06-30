@@ -64,13 +64,6 @@ const voiceEnabledFieldIds = [
 // --- Central data store for all file inputs ---
 const fileDataStore: { [inputId: string]: FileWithComment[] } = {};
 
-// --- API Key Management ---
-function getApiKey(): string {
-    // The API key is hardcoded as requested.
-    return "AIzaSyCNmXLTqwQZ51u4LSlnrXOv50iSn05bhSA";
-}
-
-
 // --- Helper to read a file as a Base64 Data URL ---
 const readFileAsDataURL = (file: File): Promise<string> => {
     return new Promise((resolve, reject) => {
@@ -164,8 +157,7 @@ function addImproveButton(wrapper: HTMLElement, inputElement: HTMLTextAreaElemen
     improveButton.setAttribute('aria-label', `Improve text for ${inputElement.id}`);
 
     improveButton.addEventListener('click', async () => {
-        const apiKey = getApiKey();
-        // The API key is now hardcoded, so the check is removed.
+        // The API key is now retrieved from environment variables.
 
         const originalText = inputElement.value.trim();
         if (!originalText) {
@@ -182,7 +174,7 @@ function addImproveButton(wrapper: HTMLElement, inputElement: HTMLTextAreaElemen
         }
         
         try {
-            const ai = new GoogleGenAI({apiKey: apiKey});
+            const ai = new GoogleGenAI({apiKey: process.env.API_KEY});
             const prompt = `Rewrite the following text for a professional engineering field report. Provide 3 distinct alternative versions in a JSON array format, like ["suggestion 1", "suggestion 2", "suggestion 3"]. Improve clarity, grammar, and sentence structure, but preserve all original facts and the core meaning. Do not add any new information. Original text: "${originalText}"`;
             
             const response: GenerateContentResponse = await ai.models.generateContent({
@@ -1540,8 +1532,7 @@ document.addEventListener('DOMContentLoaded', () => {
     }
 
     async function handleGenerateReport() {
-        const apiKey = getApiKey();
-        // The API key is now hardcoded, so the check is removed.
+        // The API key is now retrieved from environment variables.
 
         const loadingOverlay = document.getElementById('loading-overlay') as HTMLElement;
         const loadingText = document.getElementById('loading-text') as HTMLElement;
@@ -1556,7 +1547,7 @@ document.addEventListener('DOMContentLoaded', () => {
         const fullTextSummary = generateTextSummaryForAI(formData);
 
         // --- AI Generation ---
-        const ai = new GoogleGenAI({ apiKey: apiKey });
+        const ai = new GoogleGenAI({ apiKey: process.env.API_KEY });
 
         const execSummaryPrompt = `Based on the following pipeline bridge crossing assessment data, write a detailed and comprehensive professional Executive Summary for an engineering report. This summary should be thorough, elaborating on the overall condition, all findings from minor to high-priority, and the specific recommendations made. Ensure the summary is extensive enough to provide a full overview without being overly brief. Data:\n${fullTextSummary}`;
         const finalSummaryPrompt = `Based on the following pipeline bridge crossing assessment data, write a comprehensive "Final Summary of Evaluation". This should synthesize all key findings from the report into a detailed concluding paragraph. Data:\n${fullTextSummary}`;
