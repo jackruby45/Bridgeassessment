@@ -65,20 +65,9 @@ const voiceEnabledFieldIds = [
 const fileDataStore: { [inputId: string]: FileWithComment[] } = {};
 
 // --- API Key Management ---
-function getApiKey(): string | null {
-    const apiKeyInput = document.getElementById('api-key-input') as HTMLInputElement;
-    if (apiKeyInput && apiKeyInput.value.trim()) {
-        return apiKeyInput.value.trim();
-    }
-    return null;
-}
-
-function saveApiKey(key: string) {
-    localStorage.setItem('userApiKey', key);
-}
-
-function loadApiKey() {
-    return localStorage.getItem('userApiKey');
+function getApiKey(): string {
+    // The API key is hardcoded as requested.
+    return "AIzaSyCNmXLTqwQZ51u4LSlnrXOv50iSn05bhSA";
 }
 
 
@@ -176,11 +165,7 @@ function addImproveButton(wrapper: HTMLElement, inputElement: HTMLTextAreaElemen
 
     improveButton.addEventListener('click', async () => {
         const apiKey = getApiKey();
-        if (!apiKey) {
-            alert("Please enter your Google AI API Key to use this feature.");
-            document.getElementById('api-key-input')?.focus();
-            return;
-        }
+        // The API key is now hardcoded, so the check is removed.
 
         const originalText = inputElement.value.trim();
         if (!originalText) {
@@ -1113,8 +1098,6 @@ document.addEventListener('DOMContentLoaded', () => {
     const adminPasswordInput = document.getElementById('admin-password') as HTMLInputElement;
     const adminUnlockButton = document.getElementById('admin-unlock-button') as HTMLButtonElement;
     const adminUnlockContainer = document.getElementById('admin-unlock-container') as HTMLElement;
-    const apiKeyInput = document.getElementById('api-key-input') as HTMLInputElement;
-    const apiKeyToggle = document.getElementById('api-key-toggle') as HTMLButtonElement;
 
 
     function populateForm() {
@@ -1558,11 +1541,7 @@ document.addEventListener('DOMContentLoaded', () => {
 
     async function handleGenerateReport() {
         const apiKey = getApiKey();
-        if (!apiKey) {
-            alert("Please enter your Google AI API Key to generate a report with AI summaries.");
-            document.getElementById('api-key-input')?.focus();
-            return;
-        }
+        // The API key is now hardcoded, so the check is removed.
 
         const loadingOverlay = document.getElementById('loading-overlay') as HTMLElement;
         const loadingText = document.getElementById('loading-text') as HTMLElement;
@@ -1576,61 +1555,30 @@ document.addEventListener('DOMContentLoaded', () => {
         const formData = getFormData();
         const fullTextSummary = generateTextSummaryForAI(formData);
 
-        // --- AI Generation (Consolidated into a single call) ---
+        // --- AI Generation ---
         const ai = new GoogleGenAI({ apiKey: apiKey });
 
-        const sectionTitles = formSections.map(s => s.title);
-        const combinedPrompt = `Based on the following pipeline bridge crossing assessment data, generate content for an engineering report. Provide the output as a single JSON object with three top-level keys: "executiveSummary", "finalSummary", and "sectionSummaries".
+        const execSummaryPrompt = `Based on the following pipeline bridge crossing assessment data, write a detailed and comprehensive professional Executive Summary for an engineering report. This summary should be thorough, elaborating on the overall condition, all findings from minor to high-priority, and the specific recommendations made. Ensure the summary is extensive enough to provide a full overview without being overly brief. Data:\n${fullTextSummary}`;
+        const finalSummaryPrompt = `Based on the following pipeline bridge crossing assessment data, write a comprehensive "Final Summary of Evaluation". This should synthesize all key findings from the report into a detailed concluding paragraph. Data:\n${fullTextSummary}`;
+        
+        // We no longer need per-section summaries for the ToC
+        const promises = [
+            ai.models.generateContent({ model: 'gemini-2.5-flash-preview-04-17', contents: execSummaryPrompt }),
+            ai.models.generateContent({ model: 'gemini-2.5-flash-preview-04-17', contents: finalSummaryPrompt }),
+        ];
 
-1.  "executiveSummary": A concise, professional executive summary suitable for the first page of the report. Focus on the overall condition, any immediate or high-priority findings, and the general recommendation.
-2.  "finalSummary": A comprehensive "Final Summary of Evaluation". This should synthesize all key findings from the report into a detailed concluding paragraph.
-3.  "sectionSummaries": A JSON object where each key is an exact section title from the provided list and the value is a single-sentence summary for that section. If a section has no relevant data or findings, return an empty string for its value.
-
-Section titles list: ${JSON.stringify(sectionTitles)}
-
-Full Assessment Data:
-${fullTextSummary}`;
-
-        let execSummary = 'Warning: Could not connect to the AI service to generate summary. Please write it manually.';
-        let finalSummary = 'Warning: Could not connect to the AI service to generate summary. Please write it manually.';
-        let sectionSummaries: { [key: string]: string } = {};
-
-        try {
-            const response = await ai.models.generateContent({
-                model: 'gemini-2.5-flash-preview-04-17',
-                contents: combinedPrompt,
-                config: { responseMimeType: 'application/json' }
-            });
-
-            let jsonStr = response.text.trim();
-            const fenceRegex = /^```(\w*)?\s*\n?(.*?)\n?\s*```$/s;
-            const match = jsonStr.match(fenceRegex);
-            if (match && match[2]) {
-                jsonStr = match[2].trim();
-            }
-            
-            const parsedData = JSON.parse(jsonStr);
-            
-            if (parsedData.executiveSummary && typeof parsedData.executiveSummary === 'string') {
-                execSummary = parsedData.executiveSummary;
-            }
-            if (parsedData.finalSummary && typeof parsedData.finalSummary === 'string') {
-                finalSummary = parsedData.finalSummary;
-            }
-            if (parsedData.sectionSummaries && typeof parsedData.sectionSummaries === 'object') {
-                sectionSummaries = parsedData.sectionSummaries;
-            }
-
-        } catch (error) {
-            console.error("Error generating report summaries:", error);
-            // The default warning messages will be used. The user will be able to see the error in the console.
-        }
+        const [execResult, finalResult] = await Promise.allSettled(promises);
 
         loadingOverlay.style.display = 'none';
 
         // --- Populate Modal ---
-        execSummaryTextarea.value = execSummary;
-        finalSummaryTextarea.value = finalSummary;
+        execSummaryTextarea.value = (execResult.status === 'fulfilled') 
+            ? execResult.value.text 
+            : `Warning: Could not connect to the AI service to generate summary. Please write it manually.`;
+
+        finalSummaryTextarea.value = (finalResult.status === 'fulfilled') 
+            ? finalResult.value.text 
+            : `Warning: Could not connect to the AI service to generate summary. Please write it manually.`;
             
         autoResizeTextarea(execSummaryTextarea);
         autoResizeTextarea(finalSummaryTextarea);
@@ -1655,7 +1603,7 @@ ${fullTextSummary}`;
 
         const generatePdfHandler = () => {
             modal.style.display = 'none';
-            buildPdfDocument(formData, execSummaryTextarea.value, finalSummaryTextarea.value, sectionSummaries);
+            buildPdfDocument(formData, execSummaryTextarea.value, finalSummaryTextarea.value);
         };
 
         const cancelHandler = () => {
@@ -1666,58 +1614,72 @@ ${fullTextSummary}`;
         newCancelButton.addEventListener('click', cancelHandler);
     }
     
-    async function buildPdfDocument(formData: { [key: string]: any }, execSummary: string, finalSummary: string, sectionSummaries: { [key: string]: string }) {
+    interface TocEntry {
+        uniqueId: string; // A unique identifier for the entry
+        title: string;
+        level: 0 | 1; // 0 for section, 1 for field
+        tocPage: number; // The page number of the ToC page where this entry is
+        y: number; // The y-coordinate on the ToC page
+        contentPage?: number; // The page number of the content this entry points to
+    }
+
+    async function buildPdfDocument(formData: { [key: string]: any }, execSummary: string, finalSummary: string) {
         const loadingOverlay = document.getElementById('loading-overlay') as HTMLElement;
         const loadingText = document.getElementById('loading-text') as HTMLElement;
         loadingText.textContent = "Generating PDF...";
         loadingOverlay.style.display = 'flex';
-
+    
         try {
             const { jsPDF } = window.jspdf;
             const doc = new jsPDF();
-
+    
             const pageWidth = doc.internal.pageSize.getWidth();
             const pageHeight = doc.internal.pageSize.getHeight();
             const margin = 15;
-            let cursorY = margin;
             
             formData['final-summary-evaluation'] = finalSummary;
-
+    
+            // --- Helper for header/footer ---
             const addHeaderFooter = () => {
                 const pageCount = doc.internal.getNumberOfPages();
                 for (let i = 1; i <= pageCount; i++) {
                     doc.setPage(i);
+                    // No header/footer on title page or any direct continuations of it
+                    const isTitlePage = i === 1; 
+                    // This logic is imperfect for multi-page summaries, but for now, we'll keep it simple
+                    // and skip the first page. A more robust way would track summary pages.
+                    if (isTitlePage) continue;
+                    
                     doc.setFont('helvetica', 'normal');
-                    doc.setFontSize(10);
+                    doc.setFontSize(9);
                     doc.text(`Page ${i} of ${pageCount}`, pageWidth - margin, pageHeight - 10, { align: 'right' });
+                    doc.text(`Crossing ID: ${formData['crossing-id'] || 'N/A'}`, margin, pageHeight - 10);
                 }
             };
             
-            // --- Title Page ---
+            // =================================================================
+            // PAGE 1: TITLE PAGE & EXECUTIVE SUMMARY
+            // =================================================================
+            let cursorY = margin;
             doc.setFontSize(22);
             doc.setFont('helvetica', 'bold');
             doc.text('UNITIL Pipeline Bridge Crossing Assessment Report', pageWidth / 2, cursorY, { align: 'center' });
             cursorY += 20;
-
+    
             const docField = formSections.find(s => s.id === 'general-info')?.fields.find(f => f.id === 'doc-select');
             const docValue = formData['doc-select'];
             const docText = docField?.options?.find(opt => opt.value === docValue)?.text || 'N/A';
-
+    
             doc.setFontSize(12);
             doc.setFont('helvetica', 'normal');
-            doc.text(`Crossing ID: ${formData['crossing-id'] || 'N/A'}`, margin, cursorY);
-            cursorY += 7;
-            doc.text(`Bridge Name: ${formData['bridge-name'] || 'N/A'}`, margin, cursorY);
-            cursorY += 7;
-            doc.text(`Town/City: ${formData['town-city'] || 'N/A'}`, margin, cursorY);
-            cursorY += 7;
-            doc.text(`District Operating Center: ${docText}`, margin, cursorY);
-            cursorY += 7;
-            doc.text(`Date of Assessment: ${formData['date-of-assessment'] || 'N/A'}`, margin, cursorY);
-            cursorY += 7;
-            doc.text(`Assessed By: ${formData['assessment-by'] || 'N/A'}`, margin, cursorY);
-            cursorY += 15;
-
+            doc.text(`Crossing ID: ${formData['crossing-id'] || 'N/A'}`, margin, cursorY); cursorY += 7;
+            doc.text(`Bridge Name: ${formData['bridge-name'] || 'N/A'}`, margin, cursorY); cursorY += 7;
+            doc.text(`Town/City: ${formData['town-city'] || 'N/A'}`, margin, cursorY); cursorY += 7;
+            doc.text(`District Operating Center: ${docText}`, margin, cursorY); cursorY += 7;
+            doc.text(`Date of Assessment: ${formData['date-of-assessment'] || 'N/A'}`, margin, cursorY); cursorY += 7;
+            doc.text(`Assessed By: ${formData['assessment-by'] || 'N/A'}`, margin, cursorY); cursorY += 15;
+    
+            // --- Executive Summary with Page Break Handling ---
             doc.setFontSize(16);
             doc.setFont('helvetica', 'bold');
             doc.text('Executive Summary', margin, cursorY);
@@ -1726,153 +1688,242 @@ ${fullTextSummary}`;
             doc.setFontSize(11);
             doc.setFont('helvetica', 'normal');
             const summaryLines = doc.splitTextToSize(execSummary, pageWidth - margin * 2);
-            doc.text(summaryLines, margin, cursorY);
-            
-            // --- Data Table Page(s) ---
-            const tocEntries: {title: string, page: number, summary?: string}[] = [];
-            tocEntries.push({ title: 'Executive Summary', page: 1 }); // Add title page to TOC
-            const reportData: (string | { content: string; styles: { fontStyle: 'bold' | 'normal' | 'italic', halign?: 'left' | 'center' | 'right' } })[][] = [];
+            const lineHeight = doc.getFontSize(); // Use font size for true single spacing
 
-            formSections.forEach(section => {
-                let sectionHasContent = false;
-                const sectionRows: any[][] = [];
+            for (const line of summaryLines) {
+                // Check if adding the next line would overflow the page
+                if (cursorY + lineHeight > pageHeight - margin) {
+                    doc.addPage();
+                    cursorY = margin; // Reset cursor to top margin
 
-                section.fields.forEach(field => {
-                    if (field.type === 'file') return;
-                    if (field.containerId) {
-                        const container = document.getElementById(field.containerId);
-                        if (!container || container.style.display === 'none') return;
-                    }
-
-                    const value = formData[field.id];
-                    let displayValue: string | null = null;
+                    // Add a continuation header on the new page
+                    doc.setFontSize(16);
+                    doc.setFont('helvetica', 'bold');
+                    doc.text('Executive Summary (Continued)', margin, cursorY);
+                    cursorY += 12; // Extra space after header
                     
+                    doc.setFontSize(11);
+                    doc.setFont('helvetica', 'normal');
+                }
+                doc.text(line, margin, cursorY);
+                cursorY += lineHeight; // Use single-spaced line height
+            }
+    
+            // =================================================================
+            // PASS 1: DRAW TABLE OF CONTENTS LAYOUT (without page numbers)
+            // =================================================================
+            doc.addPage();
+            let tocPageNumber = doc.internal.getCurrentPageInfo().pageNumber;
+            let tocY = margin;
+            const tocEntries: TocEntry[] = [];
+            
+            doc.setFontSize(16);
+            doc.setFont('helvetica', 'bold');
+            doc.text('Table of Contents', margin, tocY);
+            tocY += 15;
+    
+            const allTocItems: { uniqueId: string, title: string; level: 0 | 1 }[] = [];
+            formSections.forEach(section => {
+                allTocItems.push({ uniqueId: section.id, title: section.title, level: 0 });
+                section.fields.forEach(field => {
+                    if (field.type === 'file' || (field.containerId && document.getElementById(field.containerId)?.style.display === 'none')) {
+                        return;
+                    }
+                    if (field.type === 'clearance-group' && field.options) {
+                        field.options.forEach(opt => {
+                            allTocItems.push({ uniqueId: `${section.id}-${field.id}-${opt.value}`, title: opt.text, level: 1 });
+                        });
+                        return; // Done with this field, skip generic label addition
+                    }
+                    allTocItems.push({ uniqueId: `${section.id}-${field.id}`, title: field.label, level: 1 });
+                    if (field.assessmentOptions) {
+                        allTocItems.push({ uniqueId: `${section.id}-${field.id}-assessment`, title: `${field.label} (Source)`, level: 1 });
+                    }
+                });
+            });
+            
+            const imageFiles = [...(fileDataStore['photographs'] || []), ...(fileDataStore['other-docs'] || [])]
+                .filter(file => file && (file.type === 'image/jpeg' || file.type === 'image/png'));
+            if (imageFiles.length > 0) {
+                allTocItems.push({ uniqueId: 'photographs', title: 'Photographs and Attachments', level: 0 });
+            }
+    
+            for (const item of allTocItems) {
+                const isSection = item.level === 0;
+                const requiredHeight = isSection ? 7 : 6;
+                
+                if (tocY + requiredHeight > pageHeight - margin) {
+                    doc.addPage();
+                    tocPageNumber = doc.internal.getCurrentPageInfo().pageNumber;
+                    tocY = margin;
+                    doc.setFontSize(16);
+                    doc.setFont('helvetica', 'bold');
+                    doc.text('Table of Contents (Continued)', margin, tocY);
+                    tocY += 15;
+                }
+                
+                doc.setTextColor(0, 0, 0);
+                doc.setFontSize(isSection ? 12 : 10);
+                doc.setFont('helvetica', isSection ? 'bold' : 'normal');
+    
+                const indent = isSection ? margin : margin + 5;
+                const title = item.title;
+                const pageNumPlaceholderWidth = doc.getTextWidth('999'); // Estimate width
+    
+                const leaderWidth = pageWidth - margin - pageNumPlaceholderWidth - 2;
+                doc.text(title, indent, tocY);
+                
+                let titleWidth = doc.getTextWidth(title);
+                let currentX = indent + titleWidth + 1;
+                const dotWidth = doc.getTextWidth('.');
+                while (currentX < leaderWidth) {
+                    doc.text('.', currentX, tocY);
+                    currentX += dotWidth;
+                }
+                
+                tocEntries.push({ uniqueId: item.uniqueId, title: item.title, level: item.level, tocPage: tocPageNumber, y: tocY });
+                tocY += requiredHeight;
+            }
+    
+            // =================================================================
+            // PASS 2: GENERATE CONTENT & GATHER PAGE NUMBERS
+            // =================================================================
+            doc.addPage();
+            
+            // Create a map for efficient lookups. Assumes uniqueIds are unique.
+            const tocMap = new Map<string, TocEntry>();
+            for (const entry of tocEntries) {
+                tocMap.set(entry.uniqueId, entry);
+            }
+
+            const reportData: (string | { content: string; styles: any })[][] = [];
+            const reportDataIds: string[] = []; // Parallel array to hold unique IDs
+            
+            formSections.forEach(section => {
+                reportData.push([{ content: section.title, styles: { fontStyle: 'bold', fillColor: '#eef1f5', textColor: '#003366', halign: 'left' } }]);
+                reportDataIds.push(section.id);
+                
+                section.fields.forEach(field => {
+                    if (field.type === 'file' || (field.containerId && document.getElementById(field.containerId)?.style.display === 'none')) return;
+    
                     if (field.type === 'clearance-group' && field.options) {
                         field.options.forEach(opt => {
                             const valueId = `${field.id}-${opt.value}-value`;
                             const unitId = `${field.id}-${opt.value}-units`;
-                            if (formData[valueId]) {
-                                sectionRows.push([opt.text, `${formData[valueId]} ${formData[unitId]}`]);
-                                sectionHasContent = true;
-                            }
+                            const val = formData[valueId];
+                            const displayVal = val ? `${val} ${formData[unitId]}` : '';
+                            reportData.push([opt.text, displayVal]);
+                            reportDataIds.push(`${section.id}-${field.id}-${opt.value}`);
                         });
-                        return;
+                        return; // Done with this field
                     }
-
+    
+                    let value = formData[field.id];
+                    let displayValue: string | null = null;
                     if (field.id === 'expansion-feature') {
-                        const featureData = value;
-                        if (typeof featureData === 'object' && featureData !== null && Object.keys(featureData).length > 0) {
-                            displayValue = Object.entries(featureData).map(([val, count]) => {
+                        if (typeof value === 'object' && value !== null && Object.keys(value).length > 0) {
+                            displayValue = Object.entries(value).map(([val, count]) => {
                                 const optionText = field.checkboxOptions?.find(opt => opt.value === val)?.text || val;
                                 return `${optionText} (Qty: ${count})`;
                             }).join('\n');
                         }
-                    } else if (value !== undefined && value !== null && value !== '' && (!Array.isArray(value) || value.length > 0) ) {
+                    } else if (value !== undefined && value !== null && value !== '' && (!Array.isArray(value) || value.length > 0)) {
                         const rawValueString = Array.isArray(value) ? value.join(', ') : String(value);
                         if (field.type === 'select') {
-                           if (field.id === 'system-select') {
-                                const docValue = formData['doc-select'] as keyof typeof systemData;
-                                const systemList = systemData[docValue] || [];
-                                const selectedSystem = systemList.find(opt => opt.value === rawValueString);
-                                displayValue = selectedSystem ? selectedSystem.text : rawValueString.split('|')[0];
-                           } else {
-                                const selectedOption = field.options?.find(opt => opt.value === rawValueString);
-                                displayValue = selectedOption ? selectedOption.text : rawValueString;
-                            }
+                            const options = (field.id === 'system-select') ? systemData[formData['doc-select'] as keyof typeof systemData] || [] : field.options || [];
+                            const selectedOption = options.find(opt => opt.value === rawValueString);
+                            displayValue = selectedOption ? selectedOption.text : rawValueString.split('|')[0];
                         } else {
                             displayValue = rawValueString;
                         }
                     }
+                    reportData.push([field.label, displayValue ?? '']);
+                    reportDataIds.push(`${section.id}-${field.id}`);
                     
-                    if (displayValue !== null) {
-                        sectionRows.push([field.label, displayValue]);
-                        sectionHasContent = true;
-                    }
-                    
-                    if(field.assessmentOptions) {
-                        const assessmentKey = `${field.id}-assessment`;
-                        const assessmentValue = formData[assessmentKey];
-                        if (assessmentValue) {
-                            sectionRows.push([`${field.label} (Source)`, assessmentValue]);
-                            sectionHasContent = true;
-                        }
+                    if (field.assessmentOptions) {
+                        const assessmentValue = formData[`${field.id}-assessment`];
+                        reportData.push([`${field.label} (Source)`, assessmentValue || '']);
+                        reportDataIds.push(`${section.id}-${field.id}-assessment`);
                     }
                 });
-                
-                if(sectionHasContent) {
-                    reportData.push([{ content: section.title, styles: { fontStyle: 'bold', halign: 'left' } }]);
-                    reportData.push(...sectionRows.map(row => [row[0].replace(/^  /, ''), row[1]]));
-                }
             });
-
-            doc.addPage(); // This is page 2, reserved for the Table of Contents.
-            doc.addPage(); // This is page 3, where the autoTable content will begin.
-            
+    
             (doc as any).autoTable({
                 startY: margin,
                 head: [['Field', 'Value']],
                 body: reportData,
                 theme: 'grid',
                 headStyles: { fillColor: [0, 90, 156] },
-                columnStyles: { 0: { halign: 'left' } },
-                didParseCell: (data: any) => {
-                    if (data.row.raw.length === 1) {
-                        data.cell.styles.fontStyle = 'bold';
-                        data.cell.styles.fillColor = '#eef1f5';
-                        data.cell.styles.textColor = '#003366';
-                        data.cell.colSpan = 2;
-                        data.cell.styles.halign = 'left';
+                didDrawCell: (data: any) => {
+                    // Process once per row using the first column for efficiency.
+                    if (data.column.index > 0) {
+                        return;
+                    }
+                    
+                    const rowIndex = data.row.index;
+                    const uniqueId = reportDataIds[rowIndex];
 
-                        const currentTitle = data.cell.text[0];
-                        if (!tocEntries.some(e => e.title === currentTitle)) {
-                            tocEntries.push({
-                                title: currentTitle,
-                                page: doc.internal.getCurrentPageInfo().pageNumber, // Page number is now correct
-                                summary: sectionSummaries[currentTitle] || ''
-                            });
+                    if (uniqueId) {
+                        const entry = tocMap.get(uniqueId);
+                        // Set page number only if it hasn't been set yet.
+                        // This handles rows that might span pages correctly.
+                        if (entry && entry.contentPage === undefined) {
+                            // FIX: Get the page number directly from the jsPDF instance,
+                            // as data.pageNumber from the plugin can be unreliable.
+                            entry.contentPage = doc.internal.getCurrentPageInfo().pageNumber;
                         }
                     }
-                }
+                },
             });
-            
-            doc.setFont('helvetica', 'normal');
-
-            // --- Photographs Page(s) ---
-            const imageFiles = [...(fileDataStore['photographs'] || []), ...(fileDataStore['other-docs'] || [])]
-                .filter(file => file && (file.type === 'image/jpeg' || file.type === 'image/png'));
-            
+    
+            // =================================================================
+            // PHOTOGRAPHS
+            // =================================================================
             if (imageFiles.length > 0) {
                 doc.addPage();
+                
                 const photosStartPage = doc.internal.getCurrentPageInfo().pageNumber;
-                tocEntries.push({ title: 'Photographs and Attachments', page: photosStartPage}); // Corrected page number
+                const photoEntry = tocMap.get('photographs');
+                if (photoEntry) {
+                    photoEntry.contentPage = photosStartPage;
+                }
+    
                 let photoY = margin;
-
+    
                 doc.setFontSize(16);
                 doc.setFont('helvetica', 'bold');
                 doc.text('Photographs and Attachments', margin, photoY);
                 photoY += 10;
                 
-                imageFiles.forEach((file) => {
+                for (const file of imageFiles) {
                     const imgWidth = 120;
                     const imgHeight = (imgWidth / 4) * 3;
                     const spacing = 10;
                     let commentHeight = 0;
-
+    
                     if (file.comment) {
                         doc.setFontSize(9);
                         doc.setFont('helvetica', 'italic');
                         const commentLines = doc.splitTextToSize(file.comment, imgWidth);
                         commentHeight = (commentLines.length * 4) + 2;
                     }
-
+    
                     if (photoY + imgHeight + commentHeight + spacing > pageHeight - margin) {
                         doc.addPage();
                         photoY = margin;
                     }
                     
-                    doc.addImage(file.dataUrl, file.type.split('/')[1].toUpperCase(), margin, photoY, imgWidth, imgHeight);
+                    try {
+                        doc.addImage(file.dataUrl, file.type.split('/')[1].toUpperCase(), margin, photoY, imgWidth, imgHeight);
+                    } catch (e) {
+                        console.error("Error adding image to PDF:", e);
+                        doc.setFont('helvetica', 'normal').setTextColor(255, 0, 0);
+                        doc.text(`Error rendering image: ${file.name}`, margin, photoY);
+                        doc.setTextColor(0, 0, 0);
+                    }
                     
                     if (file.comment) {
+                        doc.setFontSize(9);
                         doc.setFont('helvetica', 'italic');
                         const commentLines = doc.splitTextToSize(file.comment, imgWidth);
                         doc.text(commentLines, margin, photoY + imgHeight + 4);
@@ -1880,39 +1931,30 @@ ${fullTextSummary}`;
                     }
                     
                     photoY += imgHeight + commentHeight + spacing;
-                });
-            }
-            
-            // --- Final assembly: Draw TOC on reserved page ---
-            // The buggy and complex page-shuffling logic is removed.
-            doc.setPage(2);
-            let tocY = margin;
-            doc.setFontSize(16);
-            doc.setFont('helvetica', 'bold');
-            doc.text('Table of Contents', margin, tocY);
-            tocY += 15;
-            
-            tocEntries.forEach(entry => {
-                doc.setFontSize(12);
-                doc.setFont('helvetica', 'normal');
-                const dots = ".".repeat(Math.max(0, 100 - entry.title.length));
-                doc.text(`${entry.title} ${dots} ${entry.page}`, margin, tocY);
-                tocY += 6;
-
-                if (entry.summary) {
-                    doc.setFontSize(9);
-                    doc.setFont('helvetica', 'italic');
-                    const summaryLines = doc.splitTextToSize(entry.summary, pageWidth - margin * 2 - 5);
-                    doc.text(summaryLines, margin + 5, tocY);
-                    tocY += (summaryLines.length * 3.5) + 4;
                 }
-            });
-
+            }
+    
+            // =================================================================
+            // PASS 3: GO BACK AND FILL IN TABLE OF CONTENTS PAGE NUMBERS
+            // =================================================================
+            for (const entry of tocEntries) {
+                if (entry.contentPage) {
+                    doc.setPage(entry.tocPage);
+                    doc.setFontSize(entry.level === 0 ? 12 : 10);
+                    doc.setFont('helvetica', 'normal'); // Font style set per-entry, so normal here is fine.
+    
+                    const pageNum = String(entry.contentPage);
+                    doc.text(pageNum, pageWidth - margin, entry.y, { align: 'right' });
+                }
+            }
+    
+            // =================================================================
+            // FINAL STEP: ADD HEADERS/FOOTERS AND SAVE
+            // =================================================================
             addHeaderFooter();
-
             const date = new Date().toISOString().split('T')[0];
             doc.save(`pipeline-assessment-report-${formData['crossing-id'] || 'untitled'}-${date}.pdf`);
-
+    
         } catch (error) {
             console.error("Failed to generate report:", error);
             alert("An unexpected error occurred while generating the PDF. Please check the console for details.");
@@ -2033,13 +2075,6 @@ ${fullTextSummary}`;
     generateReportButton.addEventListener('click', handleGenerateReport);
     exampleButton.addEventListener('click', handleExampleAssessment);
     
-    apiKeyInput.addEventListener('input', (e) => saveApiKey((e.target as HTMLInputElement).value));
-    apiKeyToggle.addEventListener('click', () => {
-        const isPassword = apiKeyInput.type === 'password';
-        apiKeyInput.type = isPassword ? 'text' : 'password';
-        apiKeyToggle.textContent = isPassword ? 'Hide' : 'Show';
-    });
-
     adminUnlockButton.addEventListener('click', handleAdminUnlock);
     adminPasswordInput.addEventListener('keypress', (e) => {
         if (e.key === 'Enter') {
@@ -2067,10 +2102,6 @@ ${fullTextSummary}`;
     // --- Initial Population ---
     populateForm();
     populateProcessGuidelines();
-    const savedApiKey = loadApiKey();
-    if (savedApiKey) {
-        apiKeyInput.value = savedApiKey;
-    }
     handleDocChange(); // Initial call to set up the system select container correctly
     handlePipeMaterialChange(); // Initial call to set up conditional pipe fields
 });

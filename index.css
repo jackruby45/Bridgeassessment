@@ -77,46 +77,11 @@ header h1 {
     background-color: #5a6268;
 }
 
-#api-key-container {
-    display: none; /* Hide by default */
-    align-items: center;
-    gap: 8px;
-    flex-grow: 1; /* Allow it to take up space */
-}
-#api-key-container label {
-    font-weight: 600;
-    font-size: 0.9em;
-    color: #555;
-    white-space: nowrap;
-}
 .input-with-toggle {
     position: relative;
     display: flex;
     flex-grow: 1;
 }
-#api-key-input {
-    width: 100%;
-    padding: 8px;
-    padding-right: 55px; /* space for the toggle button */
-    border: 1px solid #bcccdc;
-    border-radius: 4px;
-    font-size: 0.9em;
-}
-#api-key-toggle {
-    position: absolute;
-    right: 1px;
-    top: 1px;
-    bottom: 1px;
-    background: #f0f4f8;
-    border: none;
-    border-left: 1px solid #bcccdc;
-    border-radius: 0 3px 3px 0;
-    padding: 0 10px;
-    cursor: pointer;
-    font-size: 0.8em;
-    color: #333;
-}
-
 
 #admin-unlock-container {
     display: flex;
@@ -638,11 +603,6 @@ body.voice-enabled .improve-button {
     display: block; /* Show only when admin unlocks */
 }
 
-body.voice-enabled #api-key-container {
-    display: flex;
-}
-
-
 /* Mic Button */
 .mic-button {
     right: 8px;
@@ -884,10 +844,6 @@ body.voice-enabled #api-key-container {
         flex-direction: column;
         align-items: stretch;
         gap: 15px;
-    }
-
-    #api-key-container {
-        width: 100%;
     }
     
     #admin-unlock-container {
