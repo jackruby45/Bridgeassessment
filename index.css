@@ -88,14 +88,17 @@ header h1 {
     align-items: center;
     gap: 8px;
     margin-left: auto; /* Push to the right */
+    width: 100%;
+    justify-content: flex-end;
 }
 #admin-unlock-container label {
     font-weight: 600;
     font-size: 0.9em;
     color: #555;
     text-transform: uppercase;
+    white-space: nowrap;
 }
-#admin-unlock-container input {
+#admin-unlock-container input#admin-password {
     width: 80px;
     padding: 8px;
     border: 1px solid #bcccdc;
@@ -103,6 +106,17 @@ header h1 {
     font-family: monospace;
     transition: border-color 0.3s ease;
 }
+
+#admin-unlock-container #api-key-input {
+    width: auto;
+    flex-grow: 1;
+    min-width: 250px;
+    padding: 8px;
+    border: 1px solid #bcccdc;
+    border-radius: 4px;
+    font-family: monospace;
+}
+
 
 #admin-unlock-button {
     padding: 9px 12px;
@@ -119,6 +133,30 @@ header h1 {
 #admin-unlock-button:hover {
     background-color: #5a6268;
 }
+
+#admin-unlock-container #save-api-key-button {
+    padding: 9px 15px;
+    font-size: 0.9em;
+    font-weight: 500;
+    color: #fff;
+    background-color: #28a745;
+    border: none;
+    border-radius: 4px;
+    cursor: pointer;
+    transition: background-color 0.2s ease;
+}
+
+#admin-unlock-container #save-api-key-button:hover {
+    background-color: #218838;
+}
+
+.api-key-status {
+    padding-left: 10px;
+    font-weight: bold;
+    font-size: 0.9em;
+    white-space: nowrap;
+}
+
 
 .unlocked-message {
     font-weight: 600;
@@ -850,6 +888,11 @@ body.voice-enabled .improve-button {
         margin-left: 0;
         width: 100%;
         justify-content: flex-start;
+        flex-wrap: wrap;
+    }
+
+    #admin-unlock-container #api-key-input {
+        min-width: 150px;
     }
     
     .control-button {
