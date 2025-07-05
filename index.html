@@ -34,9 +34,15 @@
         
         <div id="controls-bottom-row" class="controls-row">
             <div id="admin-unlock-container">
-                <label for="admin-password">ADMIN</label>
-                <input type="password" id="admin-password" placeholder="Code">
-                <button type="button" id="admin-unlock-button">Unlock</button>
+                <div id="admin-locked-view">
+                    <label for="admin-password">ADMIN</label>
+                    <input type="password" id="admin-password" placeholder="Code">
+                    <button type="button" id="admin-unlock-button">Unlock</button>
+                </div>
+                <div id="admin-unlocked-view" style="display: none;">
+                     <span class="unlocked-message">✓ Admin Features Unlocked</span>
+                     <button type="button" id="admin-lock-button" class="control-button secondary">Exit Admin Mode</button>
+                </div>
             </div>
         </div>
 

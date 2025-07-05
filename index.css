@@ -91,6 +91,13 @@ header h1 {
     width: 100%;
     justify-content: flex-end;
 }
+
+#admin-locked-view, #admin-unlocked-view {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+}
+
 #admin-unlock-container label {
     font-weight: 600;
     font-size: 0.9em;
@@ -353,6 +360,7 @@ header h1 {
     align-items: center;
     margin-bottom: 12px;
     margin-left: 5px;
+    flex-wrap: wrap; /* Allow wrapping for nested content */
 }
 
 .checkbox-item:last-child,
@@ -433,6 +441,7 @@ header h1 {
     background-color: #f8f9fa;
     border: 1px solid #eef1f5;
     border-radius: 4px;
+    width: 100%;
 }
 .assessment-options-label {
     display: block;
@@ -464,6 +473,118 @@ header h1 {
     margin-bottom: 0;
 }
 
+/* Styles for Expansion Loop Details */
+.expansion-loop-details {
+    width: 100%;
+    box-sizing: border-box;
+    padding: 15px;
+    margin-top: 10px;
+    margin-left: 30px; /* Indent under the checkbox */
+    background-color: #f0f4f8;
+    border: 1px solid #dde4eb;
+    border-radius: 6px;
+    display: flex;
+    flex-direction: column;
+    gap: 15px;
+}
+
+#expansion-loop-list {
+    display: flex;
+    flex-direction: column;
+    gap: 20px;
+    width: 100%;
+}
+
+.expansion-loop-entry {
+    border: 1px solid #cce0f0;
+    padding: 20px;
+    padding-top: 15px;
+    border-radius: 6px;
+    position: relative;
+    background-color: #fbfcfe;
+    display: flex;
+    flex-direction: column;
+    gap: 15px;
+}
+
+.expansion-loop-entry legend {
+    font-weight: 700;
+    color: #004477;
+    padding: 0 5px;
+    font-size: 1.05em;
+}
+
+.remove-loop-button {
+    position: absolute;
+    top: 8px;
+    right: 8px;
+    background: #fde8e8;
+    border: 1px solid #e57373;
+    color: #c62828;
+    border-radius: 50%;
+    cursor: pointer;
+    width: 28px;
+    height: 28px;
+    font-weight: bold;
+    font-size: 16px;
+    line-height: 26px;
+    text-align: center;
+    padding: 0;
+    transition: background-color 0.2s, color 0.2s;
+}
+
+.remove-loop-button:hover {
+    background: #c62828;
+    color: white;
+}
+
+.add-loop-button-container {
+    margin-top: 10px;
+    width: 100%;
+}
+#add-expansion-loop-button {
+    background-color: #e8f5e9;
+    color: #2e7d32;
+    border: 1px solid #a5d6a7;
+    width: 100%;
+}
+#add-expansion-loop-button:hover {
+    background-color: #c8e6c9;
+    border-color: #81c784;
+}
+
+
+.form-field-inline {
+    display: flex;
+    align-items: center;
+    gap: 10px;
+    flex-wrap: wrap;
+}
+
+.form-field-inline label {
+    flex-shrink: 0;
+    margin-bottom: 0 !important; /* Override default block label margin */
+    font-weight: normal !important;
+}
+
+.form-field-inline input {
+    width: 120px !important;
+}
+
+.expansion-loop-entry .assessment-options-group {
+    margin-top: 0;
+    padding: 15px;
+    border-color: #dde4eb;
+}
+
+.expansion-loop-entry .assessment-options-group legend {
+    font-size: 1em;
+    font-weight: 600;
+    padding: 0;
+    margin: 0 0 10px 0;
+    width: 100%;
+    color: #2c3e50;
+}
 
 /* Styles for File Input with Comments and Thumbnails */
 .file-list-container {
@@ -975,5 +1096,8 @@ body.voice-enabled .improve-button {
 @media (max-width: 480px) {
      .file-comment-item {
         flex-direction: column;
+    }
+    .expansion-loop-details {
+        margin-left: 0;
     }
 }

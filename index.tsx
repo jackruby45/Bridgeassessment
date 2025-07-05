@@ -44,8 +44,12 @@ interface FormSectionData {
     fields: FormField[];
 }
 
-// Global state for the user-provided API key
-let userApiKey: string | null = null;
+interface ExpansionLoopData {
+    leg1: string;
+    leg2: string;
+    leg3: string;
+    source: string;
+}
 
 // List of field IDs that should have voice-to-text enabled
 const voiceEnabledFieldIds = [
@@ -161,12 +165,6 @@ function addImproveButton(wrapper: HTMLElement, inputElement: HTMLTextAreaElemen
     improveButton.setAttribute('aria-label', `Improve text for ${inputElement.id}`);
 
     improveButton.addEventListener('click', async () => {
-        const apiKey = userApiKey;
-        if (!apiKey) {
-            alert("Please unlock admin features and set your API key first.");
-            return;
-        }
-
         const originalText = inputElement.value.trim();
         if (!originalText) {
             alert("There is no text to improve.");
@@ -182,8 +180,8 @@ function addImproveButton(wrapper: HTMLElement, inputElement: HTMLTextAreaElemen
         }
         
         try {
-            const ai = new GoogleGenAI({apiKey: apiKey});
-            const prompt = `Rewrite the following text for a professional engineering field report. Provide 3 distinct alternative versions in a JSON array format, like ["suggestion 1", "suggestion 2", "suggestion 3"]. Improve clarity, grammar, and sentence structure, but preserve all original facts and the core meaning. Do not add any new information. Original text: "${originalText}"`;
+            const ai = new GoogleGenAI({apiKey: process.env.Gemini_API_Key});
+            const prompt = `Rewrite the following text for a professional engineering field report. Your response must be in a JSON array format containing 3 distinct alternative versions, like ["suggestion 1", "suggestion 2", "suggestion 3"]. For each suggestion, use well-structured paragraphs and professional, formal language appropriate for an engineering document. Improve clarity, grammar, and sentence structure, while preserving all original facts and the core meaning. Do not add any new information. Original text: "${originalText}"`;
             
             const response: GenerateContentResponse = await ai.models.generateContent({
                 model: 'gemini-2.5-flash-preview-04-17',
@@ -310,6 +308,103 @@ function addMicrophoneButton(wrapper: HTMLElement, inputElement: HTMLTextAreaEle
     wrapper.appendChild(micButton);
 }
 
+
+function addExpansionLoopFieldset(container: HTMLElement, index: number) {
+    const fieldset = document.createElement('fieldset');
+    fieldset.className = 'expansion-loop-entry';
+    fieldset.dataset.index = String(index);
+
+    const legend = document.createElement('legend');
+    legend.textContent = `Expansion Loop #${index + 1}`;
+    fieldset.appendChild(legend);
+    
+    const removeBtn = document.createElement('button');
+    removeBtn.type = 'button';
+    removeBtn.innerHTML = '&times;';
+    removeBtn.className = 'remove-loop-button';
+    removeBtn.setAttribute('aria-label', `Remove Expansion Loop #${index + 1}`);
+    removeBtn.onclick = () => fieldset.remove();
+    fieldset.appendChild(removeBtn);
+
+    const dimensionFields = [
+        { id: `expansion-loop-leg1-${index}`, name: `expansion-loop-leg1-${index}`, label: 'Leg 1 Dimension (center-to-center, ft):' },
+        { id: `expansion-loop-leg2-${index}`, name: `expansion-loop-leg2-${index}`, label: 'Leg 2 Dimension (center-to-center, ft):' },
+        { id: `expansion-loop-leg3-${index}`, name: `expansion-loop-leg3-${index}`, label: 'Leg 3 Dimension (center-to-center, ft):' }
+    ];
+
+    dimensionFields.forEach(df => {
+        const fieldWrapper = document.createElement('div');
+        fieldWrapper.className = 'form-field-inline';
+        const dimLabel = document.createElement('label');
+        dimLabel.htmlFor = df.id;
+        dimLabel.textContent = df.label;
+        const dimInput = document.createElement('input');
+        dimInput.type = 'number';
+        dimInput.id = df.id;
+        dimInput.name = df.name;
+        dimInput.placeholder = 'feet';
+        fieldWrapper.appendChild(dimLabel);
+        fieldWrapper.appendChild(dimInput);
+        fieldset.appendChild(fieldWrapper);
+    });
+
+    const sourceFieldset = document.createElement('fieldset');
+    sourceFieldset.className = 'assessment-options-group';
+    const sourceLegend = document.createElement('legend');
+    sourceLegend.textContent = 'Dimension Source';
+    sourceFieldset.appendChild(sourceLegend);
+
+    const sourceOptions = ['Measured', 'Assumed', 'Obtained from records', 'Other'];
+    sourceOptions.forEach((sOpt, radioIndex) => {
+        const radioItem = document.createElement('div');
+        radioItem.className = 'radio-item-inline';
+        const radioInput = document.createElement('input');
+        radioInput.type = 'radio';
+        const radioId = `expansion-loop-source-${index}-${radioIndex}`;
+        radioInput.id = radioId;
+        radioInput.name = `expansion-loop-dimension-source-${index}`;
+        radioInput.value = sOpt;
+        const radioLabel = document.createElement('label');
+        radioLabel.htmlFor = radioId;
+        radioLabel.textContent = sOpt;
+        radioItem.appendChild(radioInput);
+        radioItem.appendChild(radioLabel);
+        sourceFieldset.appendChild(radioItem);
+    });
+    fieldset.appendChild(sourceFieldset);
+
+    container.appendChild(fieldset);
+}
+
+function handleAbutmentAChange(event: Event) {
+    const abutmentASelect = event.target as HTMLSelectElement;
+    const abutmentBSelect = document.getElementById('abutment-b-location') as HTMLSelectElement;
+    if (!abutmentBSelect) return;
+
+    const selectedValue = abutmentASelect.value;
+    let oppositeValue = '';
+
+    switch (selectedValue) {
+        case 'north':
+            oppositeValue = 'south';
+            break;
+        case 'south':
+            oppositeValue = 'north';
+            break;
+        case 'east':
+            oppositeValue = 'west';
+            break;
+        case 'west':
+            oppositeValue = 'east';
+            break;
+        default:
+            oppositeValue = ''; // Handle the "Select Direction..." case
+    }
+    
+    abutmentBSelect.value = oppositeValue;
+}
+
+
 function createFieldElement(field: FormField): HTMLElement {
     const fieldContainer = document.createElement('div');
     fieldContainer.classList.add('form-field');
@@ -382,32 +477,62 @@ function createFieldElement(field: FormField): HTMLElement {
                 itemContainer.appendChild(input);
                 itemContainer.appendChild(itemLabel);
 
-                // --- Special handling for quantity input ---
+                // --- Special handling for expansion features ---
                 if (field.id === 'expansion-feature') {
-                    const quantityInput = document.createElement('input');
-                    quantityInput.type = 'number';
-                    quantityInput.min = '1';
-                    quantityInput.step = '1';
-                    quantityInput.placeholder = 'Qty';
-                    quantityInput.className = 'quantity-input';
-                    quantityInput.id = `${input.id}-quantity`;
-                    quantityInput.style.display = 'none'; // Initially hidden
+                    if (opt.value === 'expansion_loop') {
+                        const detailsContainer = document.createElement('div');
+                        detailsContainer.id = 'expansion-loop-details-container';
+                        detailsContainer.className = 'expansion-loop-details';
+                        detailsContainer.style.display = 'none'; // Initially hidden
 
-                    input.addEventListener('change', () => {
-                        if (input.checked) {
-                            quantityInput.style.display = 'inline-block';
-                            if (!quantityInput.value) {
-                               quantityInput.value = '1'; // Default to 1 only if empty
+                        const loopList = document.createElement('div');
+                        loopList.id = 'expansion-loop-list';
+                        detailsContainer.appendChild(loopList);
+
+                        const addButtonContainer = document.createElement('div');
+                        addButtonContainer.className = 'add-loop-button-container';
+                        const addButton = document.createElement('button');
+                        addButton.id = 'add-expansion-loop-button';
+                        addButton.type = 'button';
+                        addButton.textContent = '+ Add Expansion Loop';
+                        addButton.className = 'control-button';
+                        addButtonContainer.appendChild(addButton);
+                        detailsContainer.appendChild(addButtonContainer);
+
+                        itemContainer.appendChild(detailsContainer);
+
+                        input.addEventListener('change', () => {
+                            if (input.checked) {
+                                detailsContainer.style.display = 'block';
+                            } else {
+                                detailsContainer.style.display = 'none';
+                                loopList.innerHTML = ''; // Clear added loops when unchecked
                             }
-                        } else {
-                            quantityInput.style.display = 'none';
-                            quantityInput.value = ''; // Clear value when unchecked
-                        }
-                    });
-                    itemContainer.appendChild(quantityInput);
-                }
-                // --- End special handling ---
+                        });
+                    } else {
+                        const quantityInput = document.createElement('input');
+                        quantityInput.type = 'number';
+                        quantityInput.min = '1';
+                        quantityInput.step = '1';
+                        quantityInput.placeholder = 'Qty';
+                        quantityInput.className = 'quantity-input';
+                        quantityInput.id = `${input.id}-quantity`;
+                        quantityInput.style.display = 'none'; // Initially hidden
 
+                        input.addEventListener('change', () => {
+                            if (input.checked) {
+                                quantityInput.style.display = 'inline-block';
+                                if (!quantityInput.value) {
+                                   quantityInput.value = '1'; // Default to 1 only if empty
+                                }
+                            } else {
+                                quantityInput.style.display = 'none';
+                                quantityInput.value = ''; // Clear value when unchecked
+                            }
+                        });
+                        itemContainer.appendChild(quantityInput);
+                    }
+                }
                 fieldset.appendChild(itemContainer);
             });
         }
@@ -514,34 +639,35 @@ function createFieldElement(field: FormField): HTMLElement {
         if (field.placeholder) input.placeholder = field.placeholder;
         if (field.defaultValue) input.value = field.defaultValue;
         inputWrapper.appendChild(input);
-        
-        if (field.assessmentOptions) {
-            const assessmentGroup = document.createElement('div');
-            assessmentGroup.classList.add('assessment-options-group');
-            field.assessmentOptions.forEach((optionText, index) => {
-                const radioItem = document.createElement('div');
-                radioItem.classList.add('radio-item-inline');
-                const radioInput = document.createElement('input');
-                radioInput.type = 'radio';
-                const radioId = `${field.id}-assessment-${index}`;
-                radioInput.id = radioId;
-                radioInput.name = `${field.id}-assessment`;
-                radioInput.value = optionText;
-                
-                if (field.defaultAssessmentOption === optionText) {
-                    radioInput.checked = true;
-                }
-                
-                const radioLabel = document.createElement('label');
-                radioLabel.htmlFor = radioId;
-                radioLabel.textContent = optionText;
+    }
 
-                radioItem.appendChild(radioInput);
-                radioItem.appendChild(radioLabel);
-                assessmentGroup.appendChild(radioItem);
-            });
-            fieldContainer.appendChild(assessmentGroup);
-        }
+    // This block is now generalized to apply to any field with assessmentOptions
+    if (field.assessmentOptions) {
+        const assessmentGroup = document.createElement('div');
+        assessmentGroup.classList.add('assessment-options-group');
+        field.assessmentOptions.forEach((optionText, index) => {
+            const radioItem = document.createElement('div');
+            radioItem.classList.add('radio-item-inline');
+            const radioInput = document.createElement('input');
+            radioInput.type = 'radio';
+            const radioId = `${field.id}-assessment-${index}`;
+            radioInput.id = radioId;
+            radioInput.name = `${field.id}-assessment`;
+            radioInput.value = optionText;
+            
+            if (field.defaultAssessmentOption === optionText) {
+                radioInput.checked = true;
+            }
+            
+            const radioLabel = document.createElement('label');
+            radioLabel.htmlFor = radioId;
+            radioLabel.textContent = optionText;
+
+            radioItem.appendChild(radioInput);
+            radioItem.appendChild(radioLabel);
+            assessmentGroup.appendChild(radioItem);
+        });
+        fieldContainer.appendChild(assessmentGroup);
     }
 
     return fieldContainer;
@@ -665,6 +791,35 @@ const systemData = {
     ]
 };
 
+// Reusable options for support methods
+const supportMethodOptions = [
+    { value: "", text: "Select Support Method..." },
+    { value: "hangers", text: "Hangers from Bridge Structure" },
+    { value: "clevis-hanger", text: "Clevis Hanger" },
+    { value: "u-bolt-to-structure", text: "U-Bolt to Structure" },
+    { value: "rollers", text: "Roller Supports on Piers/Abutments" },
+    { value: "rollers-suspended", text: "Rollers Suspended from Above" },
+    { value: "double-rollers-suspended", text: "Double Rollers Suspended from Above" },
+    { value: "saddles", text: "Saddle Supports on Piers/Abutments" },
+    { value: "brackets", text: "Brackets Attached to Bridge Deck/Girders" },
+    { value: "pipe-stand", text: "Pipe Stand/Stanchion on Deck" },
+    { value: "self-supporting", text: "Self-Supporting Span (e.g., dedicated pipe bridge)" },
+    { value: "other", text: "Other (Specify Below)" }
+];
+
+// Reusable options for cardinal directions
+const directionOptions = [
+    { value: "", text: "Select Direction..." },
+    { value: "north", text: "North" },
+    { value: "south", text: "South" },
+    { value: "east", text: "East" },
+    { value: "west", text: "West" }
+];
+
+// Reusable options for support distance source
+const supportDistanceSourceOptions = ["Estimated", "Measured", "Obtained from installation records"];
+
+
 // --- Form structure definition ---
 const formSections: FormSectionData[] = [
     {
@@ -768,7 +923,21 @@ const formSections: FormSectionData[] = [
                 containerId: 'system-select-container'
             },
             { label: "MAOP:", id: "maop", type: "text", placeholder: "Max. Allowable Operating Pressure" },
-            { label: "Pipe Diameter (inches):", id: "pipe-diameter", type: "number", placeholder: "e.g., 4, 8, 12" },
+            {
+                label: "Pipe Diameter (inches):",
+                id: "pipe-diameter",
+                type: "select",
+                options: [
+                    { value: "", text: "Select Diameter..." },
+                    { value: "2", text: "2\"" },
+                    { value: "3", text: "3\"" },
+                    { value: "4", text: "4\"" },
+                    { value: "6", text: "6\"" },
+                    { value: "8", text: "8\"" },
+                    { value: "10", text: "10\"" },
+                    { value: "12", text: "12\"" }
+                ]
+            },
             {
                 label: "Wall Thickness (inches):",
                 id: "wall-thickness",
@@ -809,7 +978,9 @@ const formSections: FormSectionData[] = [
                     { value: "x52", text: "X52" },
                     { value: "x65", text: "X65" },
                     { value: "x72", text: "X72" }
-                ]
+                ],
+                assessmentOptions: ["From records", "Stamped on pipe", "Assumed", "Unknown"],
+                defaultAssessmentOption: "Unknown"
             },
             {
                 label: "Pipe Grade (Plastic):",
@@ -843,23 +1014,100 @@ const formSections: FormSectionData[] = [
         id: "support-system",
         fields: [
             {
+                label: "Abutment A Location (Left):",
+                id: "abutment-a-location",
+                type: "select",
+                options: directionOptions
+            },
+            {
+                label: "Abutment B Location (Right):",
+                id: "abutment-b-location",
+                type: "select",
+                options: directionOptions
+            },
+            {
                 label: "Primary Support Method:",
                 id: "support-method",
                 type: "select",
-                options: [
-                    { value: "", text: "Select Support Method..." },
-                    { value: "hangers", text: "Hangers from Bridge Structure" },
-                    { value: "clevis-hanger", text: "Clevis Hanger" },
-                    { value: "u-bolt-to-structure", text: "U-Bolt to Structure" },
-                    { value: "rollers", text: "Roller Supports on Piers/Abutments" },
-                    { value: "rollers-suspended", text: "Rollers Suspended from Above" },
-                    { value: "double-rollers-suspended", text: "Double Rollers Suspended from Above" },
-                    { value: "saddles", text: "Saddle Supports on Piers/Abutments" },
-                    { value: "brackets", text: "Brackets Attached to Bridge Deck/Girders" },
-                    { value: "pipe-stand", text: "Pipe Stand/Stanchion on Deck" },
-                    { value: "self-supporting", text: "Self-Supporting Span (e.g., dedicated pipe bridge)" },
-                    { value: "other", text: "Other (Specify Below)" }
-                ]
+                options: supportMethodOptions
+            },
+            {
+                label: "Number of Supports:",
+                id: "primary-support-count",
+                type: "number",
+                placeholder: "e.g., 10"
+            },
+            {
+                label: "Distance to nearest support to the left (ft):",
+                id: "primary-support-dist-left",
+                type: "number",
+                placeholder: "feet",
+                assessmentOptions: supportDistanceSourceOptions,
+                defaultAssessmentOption: "Estimated"
+            },
+            {
+                label: "Distance to nearest support to the right (ft):",
+                id: "primary-support-dist-right",
+                type: "number",
+                placeholder: "feet",
+                assessmentOptions: supportDistanceSourceOptions,
+                defaultAssessmentOption: "Estimated"
+            },
+            {
+                label: "Secondary Support Method:",
+                id: "secondary-support-method",
+                type: "select",
+                options: supportMethodOptions
+            },
+            {
+                label: "Number of Supports:",
+                id: "secondary-support-count",
+                type: "number",
+                placeholder: "e.g., 4"
+            },
+            {
+                label: "Distance to nearest support to the left (ft):",
+                id: "secondary-support-dist-left",
+                type: "number",
+                placeholder: "feet",
+                assessmentOptions: supportDistanceSourceOptions,
+                defaultAssessmentOption: "Estimated"
+            },
+            {
+                label: "Distance to nearest support to the right (ft):",
+                id: "secondary-support-dist-right",
+                type: "number",
+                placeholder: "feet",
+                assessmentOptions: supportDistanceSourceOptions,
+                defaultAssessmentOption: "Estimated"
+            },
+            {
+                label: "Tertiary Support Method:",
+                id: "tertiary-support-method",
+                type: "select",
+                options: supportMethodOptions
+            },
+            {
+                label: "Number of Supports:",
+                id: "tertiary-support-count",
+                type: "number",
+                placeholder: "e.g., 2"
+            },
+            {
+                label: "Distance to nearest support to the left (ft):",
+                id: "tertiary-support-dist-left",
+                type: "number",
+                placeholder: "feet",
+                assessmentOptions: supportDistanceSourceOptions,
+                defaultAssessmentOption: "Estimated"
+            },
+            {
+                label: "Distance to nearest support to the right (ft):",
+                id: "tertiary-support-dist-right",
+                type: "number",
+                placeholder: "feet",
+                assessmentOptions: supportDistanceSourceOptions,
+                defaultAssessmentOption: "Estimated"
             },
             { label: "Specify Other Support Method:", id: "other-support-specify", type: "textarea", placeholder: "Describe if 'Other' was selected." },
             { label: "Comments on Support Condition (Thermal Stress):", id: "support-condition-thermal-stress-comments", type: "textarea", placeholder: "Note any signs of thermal stress, such as bent supports or strained connections." },
@@ -1036,17 +1284,22 @@ function getFormData() {
                 const featureData: { [key: string]: number } = {};
                 const checkedInputs = form.querySelectorAll<HTMLInputElement>(`input[name="${field.id}"]:checked`);
                 checkedInputs.forEach(input => {
-                    const quantityInput = document.getElementById(`${input.id}-quantity`) as HTMLInputElement;
-                    if (quantityInput && quantityInput.value) {
-                        const quantity = parseInt(quantityInput.value, 10);
-                        if (!isNaN(quantity) && quantity > 0) {
-                            featureData[input.value] = quantity;
-                        }
+                    if (input.value === 'expansion_loop') {
+                        featureData[input.value] = 1;
                     } else {
-                         featureData[input.value] = 1;
+                        const quantityInput = document.getElementById(`${input.id}-quantity`) as HTMLInputElement;
+                        if (quantityInput && quantityInput.value) {
+                            const quantity = parseInt(quantityInput.value, 10);
+                            if (!isNaN(quantity) && quantity > 0) {
+                                featureData[input.value] = quantity;
+                            }
+                        } else {
+                             featureData[input.value] = 1;
+                        }
                     }
                 });
                 data[field.id] = featureData;
+
             } else if (field.type === 'checkbox-group') {
                 const checkedInputs = form.querySelectorAll<HTMLInputElement>(`input[name="${field.id}"]:checked`);
                 data[field.id] = Array.from(checkedInputs).map(input => input.value);
@@ -1078,6 +1331,22 @@ function getFormData() {
         });
     });
 
+    // Get expansion loop details if checked
+    const expansionLoopCheckbox = document.getElementById('expansion-feature-expansion_loop') as HTMLInputElement;
+    if (expansionLoopCheckbox?.checked) {
+        const loops: ExpansionLoopData[] = [];
+        const loopEntries = document.querySelectorAll<HTMLFieldSetElement>('.expansion-loop-entry');
+        loopEntries.forEach((fieldset, index) => {
+            const leg1 = (document.getElementById(`expansion-loop-leg1-${index}`) as HTMLInputElement)?.value || '';
+            const leg2 = (document.getElementById(`expansion-loop-leg2-${index}`) as HTMLInputElement)?.value || '';
+            const leg3 = (document.getElementById(`expansion-loop-leg3-${index}`) as HTMLInputElement)?.value || '';
+            const sourceRadio = form.querySelector<HTMLInputElement>(`input[name="expansion-loop-dimension-source-${index}"]:checked`);
+            const source = sourceRadio ? sourceRadio.value : '';
+            loops.push({ leg1, leg2, leg3, source });
+        });
+        data.expansion_loops = loops;
+    }
+
     return data;
 }
 
@@ -1097,7 +1366,9 @@ document.addEventListener('DOMContentLoaded', () => {
     const processContainer = document.getElementById('process-guidelines-container') as HTMLElement;
     const adminPasswordInput = document.getElementById('admin-password') as HTMLInputElement;
     const adminUnlockButton = document.getElementById('admin-unlock-button') as HTMLButtonElement;
-    const adminUnlockContainer = document.getElementById('admin-unlock-container') as HTMLElement;
+    const adminLockButton = document.getElementById('admin-lock-button') as HTMLButtonElement;
+    const adminLockedView = document.getElementById('admin-locked-view') as HTMLElement;
+    const adminUnlockedView = document.getElementById('admin-unlocked-view') as HTMLElement;
 
 
     function populateForm() {
@@ -1136,6 +1407,22 @@ document.addEventListener('DOMContentLoaded', () => {
         const pipeMaterialSelect = document.getElementById('pipe-material') as HTMLSelectElement;
         if (pipeMaterialSelect) {
             pipeMaterialSelect.addEventListener('change', handlePipeMaterialChange);
+        }
+
+        const abutmentASelect = document.getElementById('abutment-a-location') as HTMLSelectElement;
+        if (abutmentASelect) {
+            abutmentASelect.addEventListener('change', handleAbutmentAChange);
+        }
+
+        const addLoopButton = document.getElementById('add-expansion-loop-button');
+        if (addLoopButton) {
+            addLoopButton.addEventListener('click', () => {
+                const loopList = document.getElementById('expansion-loop-list');
+                if (loopList) {
+                    const index = loopList.children.length;
+                    addExpansionLoopFieldset(loopList, index);
+                }
+            });
         }
     }
     
@@ -1268,15 +1555,18 @@ document.addEventListener('DOMContentLoaded', () => {
             <h4>4. Pipeline Support System</h4>
             <p>Evaluate how the pipeline is supported across the span.</p>
             <ul>
-                <li><strong>Support Method:</strong> Identify the primary method used.</li>
+                <li><strong>Abutment Locations:</strong> Identify the cardinal direction (North, South, East, West) for Abutment A and Abutment B to establish the orientation of the crossing.</li>
+                <li><strong>Support Method:</strong> Identify the primary, secondary, and tertiary methods used (if applicable).</li>
+                <li><strong>Support Spacing:</strong> For each support method identified, measure and record the distance in feet (ft) from a typical support to the nearest support on its left and on its right.</li>
                 <li><strong>Comments on Condition:</strong> This is a critical section. Look for signs of stress (bending, twisting), restricted movement (seized rollers), and general degradation (corrosion, loose fasteners).</li>
             </ul>
             
             <h4>5. Expansion/Contraction Provisions</h4>
             <p>Assess the features designed to manage thermal movement.</p>
             <ul>
-                <li><strong>Feature Identification:</strong> Identify the expansion loop, joint, or other design feature. Note the quantity of each.</li>
-                <li><strong>Functionality Comments:</strong> Determine if the feature can move as intended. Is an expansion loop filled with debris? Is a joint leaking or seized?</li>
+                <li><strong>Feature Identification:</strong> Check all features that apply. Note the quantity of each non-loop feature.</li>
+                <li><strong>Expansion Loops:</strong> If "Expansion Loop" is checked, click the "+ Add Expansion Loop" button for each loop present. For each loop, enter the center-of-elbow to center-of-elbow dimensions for all three legs in feet (ft). Select the source of the dimension information (Measured, Assumed, etc.).</li>
+                <li><strong>Functionality Comments:</strong> Determine if the features can move as intended. Is an expansion loop filled with debris? Is a joint leaking or seized?</li>
             </ul>
 
             <h4>6. Coating and Corrosion Control</h4>
@@ -1377,12 +1667,8 @@ document.addEventListener('DOMContentLoaded', () => {
         }
 
         Object.keys(data).forEach(key => {
-            if (key === 'fileData') {
-                const loadedFileData = data[key];
-                Object.keys(loadedFileData).forEach(inputId => {
-                    fileDataStore[inputId] = loadedFileData[inputId];
-                    renderFileList(inputId);
-                });
+            if (key === 'fileData' || key === 'expansion_loops') {
+                // Handled separately below
                 return;
             }
             
@@ -1417,14 +1703,22 @@ document.addEventListener('DOMContentLoaded', () => {
                         Object.entries(featureData).forEach(([featureValue, quantity]) => {
                             const checkboxId = `${key}-${featureValue.toLowerCase().replace(/\s+/g, '-')}`;
                             const checkbox = document.getElementById(checkboxId) as HTMLInputElement;
-                            const quantityInput = document.getElementById(`${checkboxId}-quantity`) as HTMLInputElement;
-                            if (checkbox && quantityInput) {
+                            if (checkbox) {
                                 checkbox.checked = true;
-                                quantityInput.value = String(quantity);
-                                quantityInput.style.display = 'inline-block';
+                                
+                                // Manually trigger change to show containers
+                                checkbox.dispatchEvent(new Event('change'));
+
+                                if (featureValue !== 'expansion_loop') {
+                                    const quantityInput = document.getElementById(`${checkboxId}-quantity`) as HTMLInputElement;
+                                    if (quantityInput) {
+                                        quantityInput.value = String(quantity);
+                                        quantityInput.style.display = 'inline-block';
+                                    }
+                                }
                             }
                         });
-                    } else {
+                    } else { // Fallback for old array format
                         const values = Array.isArray(data[key]) ? data[key] : [];
                         for (const el of Array.from(elementsByName) as HTMLInputElement[]) {
                            el.checked = values.includes(el.value);
@@ -1433,6 +1727,33 @@ document.addEventListener('DOMContentLoaded', () => {
                 }
             }
         });
+        
+        // Populate file data
+        if (data.fileData) {
+            const loadedFileData = data.fileData;
+            Object.keys(loadedFileData).forEach(inputId => {
+                fileDataStore[inputId] = loadedFileData[inputId];
+                renderFileList(inputId);
+            });
+        }
+        
+        // Populate expansion loops
+        if (data.expansion_loops && Array.isArray(data.expansion_loops)) {
+            const addLoopButton = document.getElementById('add-expansion-loop-button');
+            if (addLoopButton) {
+                data.expansion_loops.forEach((loopData: ExpansionLoopData, index: number) => {
+                    addLoopButton.click(); // Creates a new fieldset
+                    (document.getElementById(`expansion-loop-leg1-${index}`) as HTMLInputElement).value = loopData.leg1;
+                    (document.getElementById(`expansion-loop-leg2-${index}`) as HTMLInputElement).value = loopData.leg2;
+                    (document.getElementById(`expansion-loop-leg3-${index}`) as HTMLInputElement).value = loopData.leg3;
+                    if (loopData.source) {
+                        const sourceRadio = document.querySelector(`input[name="expansion-loop-dimension-source-${index}"][value="${loopData.source}"]`) as HTMLInputElement;
+                        if (sourceRadio) sourceRadio.checked = true;
+                    }
+                });
+            }
+        }
+
 
         // Trigger the system change to set MAOP if a system is selected
         const systemSelect = document.getElementById('system-select') as HTMLSelectElement;
@@ -1481,11 +1802,14 @@ document.addEventListener('DOMContentLoaded', () => {
                 }
                 
                 if (field.id === 'expansion-feature') {
-                    const featureData = rawValue;
+                    const featureData = rawValue as { [key: string]: number };
                     if (typeof featureData === 'object' && featureData !== null && Object.keys(featureData).length > 0) {
                         displayValue = Object.entries(featureData).map(([value, count]) => {
                             const optionText = field.checkboxOptions?.find(opt => opt.value === value)?.text || value;
-                            return `${optionText} (Qty: ${count})`;
+                             if (value !== 'expansion_loop' && count > 1) {
+                                return `${optionText} (Qty: ${count})`;
+                            }
+                            return optionText;
                         }).join(', ');
                     }
                 } else if (rawValue !== undefined && rawValue !== null && rawValue !== '' && (!Array.isArray(rawValue) || rawValue.length > 0) ) {
@@ -1496,6 +1820,10 @@ document.addEventListener('DOMContentLoaded', () => {
                         if (field.id === 'system-select') {
                             const docValue = formData['doc-select'] as keyof typeof systemData;
                             currentOptions = systemData[docValue] || [];
+                        } else if (field.id === 'support-method' || field.id === 'secondary-support-method' || field.id === 'tertiary-support-method') {
+                            currentOptions = supportMethodOptions;
+                        } else if (field.id === 'abutment-a-location' || field.id === 'abutment-b-location') {
+                            currentOptions = directionOptions;
                         }
                         const selectedOption = currentOptions.find(opt => opt.value === String(rawValue));
                         displayValue = selectedOption ? selectedOption.text : String(rawValue).split('|')[0];
@@ -1523,6 +1851,18 @@ document.addEventListener('DOMContentLoaded', () => {
                 summary += sectionSummary;
             }
         });
+
+        // Add Expansion Loop details to summary
+        if (formData.expansion_loops && formData.expansion_loops.length > 0) {
+            summary += "\n--- Expansion Loop Details ---\n";
+            formData.expansion_loops.forEach((loop: ExpansionLoopData, index: number) => {
+                summary += `Loop #${index + 1}:\n`;
+                if (loop.leg1) summary += `  - Leg 1: ${loop.leg1} ft\n`;
+                if (loop.leg2) summary += `  - Leg 2: ${loop.leg2} ft\n`;
+                if (loop.leg3) summary += `  - Leg 3: ${loop.leg3} ft\n`;
+                if (loop.source) summary += `  - Dimension Source: ${loop.source}\n`;
+            });
+        }
         
         if (!sectionsToSummarize) {
             summary += "\n--- Attached File Comments ---\n";
@@ -1540,8 +1880,6 @@ document.addEventListener('DOMContentLoaded', () => {
     }
 
     async function handleGenerateReport() {
-        const apiKey = userApiKey;
-
         const loadingOverlay = document.getElementById('loading-overlay') as HTMLElement;
         const loadingText = document.getElementById('loading-text') as HTMLElement;
         const modal = document.getElementById('summary-review-modal') as HTMLElement;
@@ -1550,37 +1888,43 @@ document.addEventListener('DOMContentLoaded', () => {
         
         const formData = getFormData();
         
-        let execSummary = "Executive Summary requires an API key. Please use the Admin unlock feature to enter one.";
-        let finalSummary = "Final Summary requires an API key. Please use the Admin unlock feature to enter one.";
+        let execSummary = "Executive Summary requires admin features to be unlocked.";
+        let finalSummary = "Final Summary requires admin features to be unlocked.";
 
-        if (apiKey) {
+        if (document.body.classList.contains('voice-enabled')) {
             loadingText.textContent = "Generating...";
             loadingOverlay.style.display = 'flex';
 
             const fullTextSummary = generateTextSummaryForAI(formData);
 
             // --- AI Generation ---
-            const ai = new GoogleGenAI({ apiKey: apiKey });
+            const ai = new GoogleGenAI({ apiKey: process.env.Gemini_API_Key });
 
-            const execSummaryPrompt = `Based on the following pipeline bridge crossing assessment data, write a detailed and comprehensive professional Executive Summary for an engineering report. This summary should be thorough, elaborating on the overall condition, all findings from minor to high-priority, and the specific recommendations made. Ensure the summary is extensive enough to provide a full overview without being overly brief. Data:\n${fullTextSummary}`;
-            const finalSummaryPrompt = `Based on the following pipeline bridge crossing assessment data, write a comprehensive "Final Summary of Evaluation". This should synthesize all key findings from the report into a detailed concluding paragraph. Data:\n${fullTextSummary}`;
+            const execSummaryPrompt = `Based on the following pipeline bridge crossing assessment data, write a detailed and comprehensive professional Executive Summary for an engineering report. Structure the summary with clear paragraphs and use formal, professional language. This summary should be thorough, elaborating on the overall condition, all findings from minor to high-priority, and the specific recommendations made. Ensure the summary is extensive enough to provide a full overview without being overly brief. Data:\n${fullTextSummary}`;
+            const finalSummaryPrompt = `Based on the following pipeline bridge crossing assessment data, write a comprehensive "Final Summary of Evaluation". This should synthesize all key findings from the report into one or more detailed concluding paragraphs. Use formal, professional language and structure the response into well-formed paragraphs. Data:\n${fullTextSummary}`;
             
-            const promises = [
-                ai.models.generateContent({ model: 'gemini-2.5-flash-preview-04-17', contents: execSummaryPrompt }),
-                ai.models.generateContent({ model: 'gemini-2.5-flash-preview-04-17', contents: finalSummaryPrompt }),
-            ];
+            try {
+                const promises = [
+                    ai.models.generateContent({ model: 'gemini-2.5-flash-preview-04-17', contents: execSummaryPrompt }),
+                    ai.models.generateContent({ model: 'gemini-2.5-flash-preview-04-17', contents: finalSummaryPrompt }),
+                ];
 
-            const [execResult, finalResult] = await Promise.allSettled(promises);
+                const [execResult, finalResult] = await Promise.allSettled(promises);
 
-            loadingOverlay.style.display = 'none';
-
-            execSummary = (execResult.status === 'fulfilled') 
-                ? execResult.value.text 
-                : `Warning: Could not connect to the AI service to generate summary. Please check the API key or network connection.`;
-    
-            finalSummary = (finalResult.status === 'fulfilled') 
-                ? finalResult.value.text 
-                : `Warning: Could not connect to the AI service to generate summary. Please check the API key or network connection.`;
+                execSummary = (execResult.status === 'fulfilled') 
+                    ? execResult.value.text 
+                    : `Warning: Could not connect to the AI service to generate summary. Please check the console for details.`;
+        
+                finalSummary = (finalResult.status === 'fulfilled') 
+                    ? finalResult.value.text 
+                    : `Warning: Could not connect to the AI service to generate summary. Please check the console for details.`;
+            } catch (error) {
+                 console.error("Error generating report summaries:", error);
+                 execSummary = "Error: Failed to generate executive summary.";
+                 finalSummary = "Error: Failed to generate final summary.";
+            } finally {
+                loadingOverlay.style.display = 'none';
+            }
         }
 
         // --- Populate Modal ---
@@ -1749,6 +2093,14 @@ document.addEventListener('DOMContentLoaded', () => {
                 });
             });
             
+            // Add Expansion Loops to ToC
+            if (formData.expansion_loops && formData.expansion_loops.length > 0) {
+                 allTocItems.push({ uniqueId: 'expansion_loops_section', title: 'Expansion Loop Details', level: 0 });
+                 formData.expansion_loops.forEach((loop: ExpansionLoopData, index: number) => {
+                     allTocItems.push({ uniqueId: `expansion_loop_${index}`, title: `Expansion Loop #${index + 1}`, level: 1 });
+                 });
+            }
+
             const imageFiles = [...(fileDataStore['photographs'] || []), ...(fileDataStore['other-docs'] || [])]
                 .filter(file => file && (file.type === 'image/jpeg' || file.type === 'image/png'));
             if (imageFiles.length > 0) {
@@ -1803,11 +2155,11 @@ document.addEventListener('DOMContentLoaded', () => {
                 tocMap.set(entry.uniqueId, entry);
             }
 
-            const reportData: (string | { content: string; styles: any })[][] = [];
+            const reportData: (string | { content: string; styles?: any; colSpan?: number })[][] = [];
             const reportDataIds: string[] = []; // Parallel array to hold unique IDs
             
             formSections.forEach(section => {
-                reportData.push([{ content: section.title, styles: { fontStyle: 'bold', fillColor: '#eef1f5', textColor: '#003366', halign: 'left' } }]);
+                reportData.push([{ content: section.title, colSpan: 2, styles: { fontStyle: 'bold', fillColor: '#eef1f5', textColor: '#003366', halign: 'left' } }]);
                 reportDataIds.push(section.id);
                 
                 section.fields.forEach(field => {
@@ -1825,19 +2177,29 @@ document.addEventListener('DOMContentLoaded', () => {
                         return; // Done with this field
                     }
     
-                    let value = formData[field.id];
+                    const value = formData[field.id];
                     let displayValue: string | null = null;
                     if (field.id === 'expansion-feature') {
-                        if (typeof value === 'object' && value !== null && Object.keys(value).length > 0) {
-                            displayValue = Object.entries(value).map(([val, count]) => {
+                        const featureData = value as { [key: string]: number };
+                        if (typeof featureData === 'object' && value !== null && Object.keys(featureData).length > 0) {
+                            displayValue = Object.entries(featureData).map(([val, count]) => {
                                 const optionText = field.checkboxOptions?.find(opt => opt.value === val)?.text || val;
-                                return `${optionText} (Qty: ${count})`;
-                            }).join('\n');
+                                if (val !== 'expansion_loop' && count > 1) {
+                                    return `${optionText} (Qty: ${count})`;
+                                }
+                                return optionText;
+                            }).join(', ');
                         }
                     } else if (value !== undefined && value !== null && value !== '' && (!Array.isArray(value) || value.length > 0)) {
                         const rawValueString = Array.isArray(value) ? value.join(', ') : String(value);
                         if (field.type === 'select') {
-                            const options = (field.id === 'system-select') ? systemData[formData['doc-select'] as keyof typeof systemData] || [] : field.options || [];
+                            const options = (field.id === 'system-select') 
+                                ? systemData[formData['doc-select'] as keyof typeof systemData] || [] 
+                                : (field.id === 'support-method' || field.id === 'secondary-support-method' || field.id === 'tertiary-support-method')
+                                ? supportMethodOptions
+                                : (field.id === 'abutment-a-location' || field.id === 'abutment-b-location')
+                                ? directionOptions
+                                : field.options || [];
                             const selectedOption = options.find(opt => opt.value === rawValueString);
                             displayValue = selectedOption ? selectedOption.text : rawValueString.split('|')[0];
                         } else {
@@ -1854,6 +2216,27 @@ document.addEventListener('DOMContentLoaded', () => {
                     }
                 });
             });
+
+            // Add Expansion Loop details to the PDF table data
+            if (formData.expansion_loops && formData.expansion_loops.length > 0) {
+                reportData.push([{ content: 'Expansion Loop Details', colSpan: 2, styles: { fontStyle: 'bold', fillColor: '#eef1f5', textColor: '#003366' } }]);
+                reportDataIds.push('expansion_loops_section');
+    
+                formData.expansion_loops.forEach((loop: ExpansionLoopData, index: number) => {
+                    const loopHeader = `Expansion Loop #${index + 1}`;
+                    reportData.push([{ content: loopHeader, colSpan: 2, styles: { fontStyle: 'bold', fillColor: '#f8f9fa' } }]);
+                    reportDataIds.push(`expansion_loop_${index}`);
+    
+                    reportData.push(['Leg 1 Dimension (ft)', loop.leg1]);
+                    reportDataIds.push(''); // No ToC entry for these sub-items
+                    reportData.push(['Leg 2 Dimension (ft)', loop.leg2]);
+                    reportDataIds.push('');
+                    reportData.push(['Leg 3 Dimension (ft)', loop.leg3]);
+                    reportDataIds.push('');
+                    reportData.push(['Dimension Source', loop.source]);
+                    reportDataIds.push('');
+                });
+            }
     
             (doc as any).autoTable({
                 startY: margin,
@@ -2001,19 +2384,42 @@ document.addEventListener('DOMContentLoaded', () => {
             "wall-thickness-comments": "Wall thickness confirmed from original construction drawings dated 1982.",
             "pipe-material": "steel",
             "pipe-grade": "x52",
+            "pipe-grade-assessment": "Stamped on pipe",
             "plastic-pipe-grade": "",
             "pipe-sdr": "",
             "installation-temp": "60",
             "installation-temp-assessment": "Assumed",
+            "abutment-a-location": "north",
+            "abutment-b-location": "south",
             "support-method": "hangers",
+            "primary-support-count": "24",
+            "primary-support-dist-left": "15.5",
+            "primary-support-dist-left-assessment": "Measured",
+            "primary-support-dist-right": "16.0",
+            "primary-support-dist-right-assessment": "Measured",
+            "secondary-support-method": "rollers",
+            "secondary-support-count": "2",
+            "secondary-support-dist-left": "40",
+            "secondary-support-dist-left-assessment": "Estimated",
+            "secondary-support-dist-right": "40",
+            "secondary-support-dist-right-assessment": "Estimated",
+            "tertiary-support-method": "",
+            "tertiary-support-count": "",
+            "tertiary-support-dist-left": "",
+            "tertiary-support-dist-left-assessment": "Estimated",
+            "tertiary-support-dist-right": "",
+            "tertiary-support-dist-right-assessment": "Estimated",
             "other-support-specify": "",
             "support-condition-thermal-stress-comments": "No signs of thermal stress. Hangers appear to be in good condition.",
             "pipe-movement-at-supports-comments": "Pipe appears to be adequately supported with no undue restrictions.",
             "sliding-roller-functionality-comments": "N/A",
             "support-comments": "All U-bolts and fasteners are tight. No significant corrosion noted on supports.",
-            "expansion-feature": { "pipe_flexibility": 1 },
+            "expansion-feature": { "expansion_loop": 1, "pipe_flexibility": 1 },
+            "expansion_loops": [
+                { "leg1": "10", "leg2": "20", "leg3": "10", "source": "Measured" }
+            ],
             "other-expansion-specify": "",
-            "expansion-feature-functionality-comments": "The long, sweeping bend on the north approach appears to be providing adequate thermal expansion capability.",
+            "expansion-feature-functionality-comments": "The expansion loop appears clear and unobstructed. The long, sweeping bend on the north approach also provides adequate thermal expansion capability.",
             "expansion-comments": "Overall accommodation for thermal movement is satisfactory.",
             "coating-type": "fusion-bonded-epoxy",
             "other-coating-type-specify": "",
@@ -2054,55 +2460,19 @@ document.addEventListener('DOMContentLoaded', () => {
         populateFormWithData(exampleData);
     }
     
+    function handleAdminLock() {
+        document.body.classList.remove('voice-enabled');
+        adminUnlockedView.style.display = 'none';
+        adminLockedView.style.display = 'flex';
+        adminPasswordInput.value = '';
+    }
+
     function handleAdminUnlock() {
         const password = adminPasswordInput.value;
         if (password === "0665") {
             document.body.classList.add('voice-enabled');
-            adminUnlockContainer.innerHTML = ''; // Clear password input and button
-
-            const apiKeyLabel = document.createElement('label');
-            apiKeyLabel.htmlFor = 'api-key-input';
-            apiKeyLabel.textContent = 'API Key:';
-            
-            const apiKeyInput = document.createElement('input');
-            apiKeyInput.type = 'password';
-            apiKeyInput.id = 'api-key-input';
-            apiKeyInput.placeholder = 'Enter Google AI API Key';
-            if (userApiKey) {
-                apiKeyInput.value = userApiKey;
-            }
-
-            const saveButton = document.createElement('button');
-            saveButton.type = 'button';
-            saveButton.id = 'save-api-key-button';
-            saveButton.textContent = 'Save';
-            
-            const statusSpan = document.createElement('span');
-            statusSpan.id = 'api-key-status';
-            statusSpan.className = 'api-key-status';
-            
-            const updateStatus = () => {
-                if (userApiKey) {
-                    statusSpan.textContent = '✓ Saved';
-                    statusSpan.style.color = '#28a745';
-                } else {
-                    statusSpan.textContent = '✗ Not set';
-                    statusSpan.style.color = '#dc3545';
-                }
-            };
-            
-            saveButton.addEventListener('click', () => {
-                userApiKey = apiKeyInput.value.trim();
-                updateStatus();
-                alert(userApiKey ? 'API Key saved successfully.' : 'API Key removed.');
-            });
-
-            adminUnlockContainer.appendChild(apiKeyLabel);
-            adminUnlockContainer.appendChild(apiKeyInput);
-            adminUnlockContainer.appendChild(saveButton);
-            adminUnlockContainer.appendChild(statusSpan);
-            updateStatus();
-
+            adminLockedView.style.display = 'none';
+            adminUnlockedView.style.display = 'flex';
         } else {
             adminPasswordInput.style.borderColor = 'red';
             adminPasswordInput.value = '';
@@ -2123,6 +2493,7 @@ document.addEventListener('DOMContentLoaded', () => {
     exampleButton.addEventListener('click', handleExampleAssessment);
     
     adminUnlockButton.addEventListener('click', handleAdminUnlock);
+    adminLockButton.addEventListener('click', handleAdminLock);
     adminPasswordInput.addEventListener('keypress', (e) => {
         if (e.key === 'Enter') {
             handleAdminUnlock();
