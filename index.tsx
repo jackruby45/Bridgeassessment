@@ -10,9 +10,6 @@ declare global {
     }
 }
 
-// This placeholder will be replaced by a CI/CD or deployment script with the actual API key.
-const GEMINI_API_KEY: string = "%%GEMINI_API_KEY%%";
-
 interface CheckboxOption {
     value: string;
     text: string;
@@ -54,6 +51,15 @@ interface ExpansionLoopData {
     source: string;
 }
 
+// Interface for code reference data structure
+interface CodeReference {
+    id: string;
+    citation: string;
+    title: string;
+    text: string;
+    condition: (formData: { [key: string]: any }) => boolean;
+}
+
 // List of field IDs that should have voice-to-text enabled
 const voiceEnabledFieldIds = [
     'crossing-description', 'weather-conditions', 'vegetation-growth', 'scour-erosion',
@@ -70,6 +76,662 @@ const voiceEnabledFieldIds = [
     'wall-thickness-comments' // Added new comment field
 ];
 
+// Data store for applicable codes and standards
+const applicableCodes: CodeReference[] = [
+    {
+        id: 'bridge_installation',
+        citation: 'ASME B31.8, Paragraph 841.1.8',
+        title: 'Pipelines on Bridges',
+        text: `Pipelines on bridges shall be designed to withstand the forces resulting from internal pressure, temperature changes, the weight of the pipe and its contents, and other dynamic loads such as wind or vibrations from the bridge structure. The design must ensure that the pipeline does not apply excessive forces or moments to the bridge members. Pipe supports shall be designed to prevent excessive friction, provide insulation where necessary, and allow for thermal expansion and contraction without creating undue stress on the pipe or the bridge.`,
+        condition: () => true // Always applicable for this form
+    },
+    {
+        id: 'atmospheric_corrosion',
+        citation: '49 CFR § 192.479',
+        title: 'Atmospheric corrosion control: General',
+        text: `(a) Each operator must clean and coat each pipeline or portion of pipeline that is exposed to the atmosphere, except pipelines under paragraph (c) of this section. (b) Coating material must be suitable for the prevention of atmospheric corrosion. (c) Except portions of pipelines in offshore splash zones, maintenance of separate lengths of pipe with a combined total of less than 100 feet (30 meters) in any 1-mile (1.6 kilometers) of pipeline need not be performed, unless the operator determines that the maintenance is needed for the safe operation of the pipeline.`,
+        condition: (formData) => !!formData['atmospheric-corrosion-details'] || !!formData['coating-comments']
+    },
+    {
+        id: 'pipe_supports',
+        citation: 'ASME B31.8, Paragraph 835.4',
+        title: 'Supports, Braces, and Anchors',
+        text: `Supports for pipelines shall be designed to support the pipe without causing excessive local stresses in the pipe. Where pipelines are subjected to expansion and contraction, supports shall be designed to accommodate the resulting movement. Bracing shall be designed to resist forces such as wind, thermal expansion, and hydrostatic testing. All attachments to the pipe shall be designed to minimize the stress concentrations on the pipe wall.`,
+        condition: (formData) => !!formData['support-condition-thermal-stress-comments'] || !!formData['pipe-movement-at-supports-comments'] || !!formData['sliding-roller-functionality-comments'] || !!formData['support-comments']
+    },
+    {
+        id: 'expansion_flexibility',
+        citation: 'ASME B31.8, Paragraph 832.1',
+        title: 'Expansion and Flexibility - General',
+        text: `Pipelines shall be designed with sufficient flexibility to prevent thermal expansion or contraction from causing excessive stresses in the piping material, excessive bending and unusual loads at joints, or undesirable forces and moments at points of connection to equipment or at anchorage or guide points. Formal analysis of adequate flexibility is required for systems that experience a temperature change greater than 100°F (56°C) or for systems that are judged to be critical by the operating company.`,
+        condition: (formData) => {
+            const features = formData['expansion-feature'];
+            return (features && Object.keys(features).length > 0 && !features.none) || !!formData['expansion-feature-functionality-comments'];
+        }
+    }
+];
+
+
+// --- Central data store for all file inputs ---
+const fileDataStore: { [inputId: string]: FileWithComment[] } = {};
+
+
+// --- Helper to read a file as a Base64 Data URL ---
+const readFileAsDataURL = (file: File): Promise<string> => {
+    return new Promise((resolve, reject) => {
+        const reader = new FileReader();
+        reader.onload = () => resolve(reader.result as string);
+        reader.onerror = (error) => reject(error);
+        reader.readAsDataURL(file);
+    });
+};
+
+// --- Helper to render the file list for a given input ---
+function renderFileList(inputId: string) {
+    const container = document.getElementById(`${inputId}-list-container`);
+    if (!container) return;
+    
+    container.innerHTML = '';
+    const files = fileDataStore[inputId];
+
+    if (files && files.length > 0) {
+        const list = document.createElement('ul');
+        list.classList.add('file-comment-list');
+
+        files.forEach((fileInfo, index) => {
+            const listItem = document.createElement('li');
+            listItem.classList.add('file-comment-item');
+
+            const filePreviewContainer = document.createElement('div');
+            filePreviewContainer.classList.add('file-preview-container');
+
+            // Updated logic to handle renderable vs non-renderable images
+            if (fileInfo.type.startsWith('image/') && fileInfo.type !== 'image/tiff') {
+                const img = document.createElement('img');
+                img.src = fileInfo.dataUrl;
+                img.classList.add('file-thumbnail');
+                img.alt = `Thumbnail for ${fileInfo.name}`;
+                filePreviewContainer.appendChild(img);
+            } else if (fileInfo.type.startsWith('image/')) { // Handles TIFF and other image types
+                filePreviewContainer.classList.add('placeholder');
+                filePreviewContainer.innerHTML = '<span>🖼️</span>'; // Picture/frame emoji
+                filePreviewContainer.title = 'Image file (preview not supported for this format)';
+            } else { // Handles non-image files
+                filePreviewContainer.classList.add('placeholder');
+                filePreviewContainer.innerHTML = '<span>📄</span>'; // Document emoji
+                filePreviewContainer.title = `Document file: ${fileInfo.type}`;
+            }
+
+            const fileInfoContainer = document.createElement('div');
+            fileInfoContainer.classList.add('file-info-container');
+            
+            const fileNameEl = document.createElement('div');
+            fileNameEl.classList.add('file-name');
+            fileNameEl.textContent = fileInfo.name;
+            
+            const commentInput = document.createElement('input');
+            commentInput.type = 'text';
+            commentInput.classList.add('file-comment-input');
+            commentInput.placeholder = 'Add a comment...';
+            commentInput.setAttribute('data-file-name', fileInfo.name);
+            commentInput.value = fileInfo.comment;
+            commentInput.addEventListener('change', (e) => {
+                const newComment = (e.target as HTMLInputElement).value;
+                if (fileDataStore[inputId] && fileDataStore[inputId][index]) {
+                    fileDataStore[inputId][index].comment = newComment;
+                }
+            });
+
+            fileInfoContainer.appendChild(fileNameEl);
+            fileInfoContainer.appendChild(commentInput);
+            
+            listItem.appendChild(filePreviewContainer);
+            listItem.appendChild(fileInfoContainer);
+
+            // Add remove button
+            const removeButton = document.createElement('button');
+            removeButton.type = 'button';
+            removeButton.innerHTML = '&times;'; // '×' symbol
+            removeButton.className = 'remove-file-button';
+            removeButton.setAttribute('aria-label', `Remove ${fileInfo.name}`);
+            removeButton.onclick = () => {
+                if (fileDataStore[inputId]) {
+                    fileDataStore[inputId].splice(index, 1);
+                    renderFileList(inputId); // Re-render the list
+                }
+            };
+            listItem.appendChild(removeButton);
+
+            list.appendChild(listItem);
+        });
+        container.appendChild(list);
+    } else {
+        container.innerHTML = `<p class="no-files-message">No files selected.</p>`;
+    }
+}
+
+// --- Helper to auto-resize textareas ---
+function autoResizeTextarea(textarea: HTMLTextAreaElement) {
+    textarea.style.height = 'auto'; // Reset height to recalculate
+    textarea.style.height = `${textarea.scrollHeight}px`;
+}
+
+// --- Helper to add text improvement button ---
+function addImproveButton(wrapper: HTMLElement, inputElement: HTMLTextAreaElement) {
+    const improveButton = document.createElement('button');
+    improveButton.type = 'button';
+    improveButton.classList.add('improve-button');
+    improveButton.textContent = 'Improve';
+    improveButton.setAttribute('aria-label', `Improve text for ${inputElement.id}`);
+
+    improveButton.addEventListener('click', async () => {
+        const originalText = inputElement.value.trim();
+        if (!originalText) {
+            alert("There is no text to improve.");
+            return;
+        }
+
+        improveButton.disabled = true;
+        improveButton.textContent = 'Working...';
+        
+        const oldSuggestions = wrapper.querySelector('.suggestions-container');
+        if (oldSuggestions) {
+            oldSuggestions.remove();
+        }
+        
+        try {
+            const ai = new GoogleGenAI({apiKey: process.env.API_KEY});
+            const prompt = `Rewrite the following text for a professional engineering field report. Your response must be in a JSON array format containing 3 distinct alternative versions, like ["suggestion 1", "suggestion 2", "suggestion 3"]. For each suggestion, use well-structured paragraphs and professional, formal language appropriate for an engineering document. Improve clarity, grammar, and sentence structure, while preserving all original facts and the core meaning. Do not add any new information. Original text: "${originalText}"`;
+            
+            const response: GenerateContentResponse = await ai.models.generateContent({
+                model: 'gemini-2.5-flash-preview-04-17',
+                contents: prompt,
+                config: { responseMimeType: "application/json" }
+            });
+            
+            let suggestions: string[] = [];
+            let jsonStr = response.text.trim();
+            const fenceRegex = /^```(\w*)?\s*\n?(.*?)\n?\s*```$/s;
+            const match = jsonStr.match(fenceRegex);
+            if (match && match[2]) {
+              jsonStr = match[2].trim();
+            }
+            
+            try {
+                const parsedData = JSON.parse(jsonStr);
+                if (Array.isArray(parsedData) && parsedData.every(item => typeof item === 'string')) {
+                    suggestions = parsedData;
+                } else {
+                    suggestions = [response.text];
+                }
+            } catch (e) {
+                suggestions = [response.text]; 
+            }
+
+            if (suggestions.length === 0) {
+                alert("Could not generate improvement suggestions.");
+                return;
+            }
+
+            const suggestionsContainer = document.createElement('div');
+            suggestionsContainer.className = 'suggestions-container';
+
+            const header = document.createElement('div');
+            header.className = 'suggestions-header';
+            const title = document.createElement('span');
+            title.textContent = 'Suggestions';
+            const closeBtn = document.createElement('button');
+            closeBtn.innerHTML = '&times;';
+            closeBtn.className = 'suggestions-close-btn';
+            closeBtn.setAttribute('aria-label', 'Close suggestions');
+            closeBtn.onclick = () => suggestionsContainer.remove();
+            header.appendChild(title);
+            header.appendChild(closeBtn);
+            suggestionsContainer.appendChild(header);
+
+            suggestions.forEach(suggestionText => {
+                const item = document.createElement('div');
+                item.className = 'suggestion-item';
+                item.textContent = suggestionText;
+                item.tabIndex = 0;
+                const selectSuggestion = () => {
+                    inputElement.value = suggestionText;
+                    autoResizeTextarea(inputElement);
+                    suggestionsContainer.remove();
+                };
+                item.onclick = selectSuggestion;
+                item.onkeydown = (e) => {
+                    if (e.key === 'Enter' || e.key === ' ') {
+                        selectSuggestion();
+                    }
+                };
+                suggestionsContainer.appendChild(item);
+            });
+
+            wrapper.appendChild(suggestionsContainer);
+
+        } catch (error) {
+            console.error("Error improving text:", error);
+            alert("Could not retrieve suggestions. Please check the console for more details.");
+        } finally {
+            improveButton.disabled = false;
+            improveButton.textContent = 'Improve';
+        }
+    });
+
+    wrapper.appendChild(improveButton);
+}
+
+// --- Helper to add voice-to-text microphone button ---
+function addMicrophoneButton(wrapper: HTMLElement, inputElement: HTMLTextAreaElement) {
+    const SpeechRecognition = window.SpeechRecognition || window.webkitSpeechRecognition;
+    if (!SpeechRecognition) return;
+
+    const micButton = document.createElement('button');
+    micButton.type = 'button';
+    micButton.classList.add('mic-button');
+    micButton.innerHTML = '&#127908;';
+    micButton.setAttribute('aria-label', `Start voice input for ${inputElement.id}`);
+
+    micButton.addEventListener('click', () => {
+        const recognition = new SpeechRecognition();
+        recognition.continuous = false;
+        recognition.interimResults = true;
+        recognition.lang = 'en-US';
+
+        micButton.classList.add('listening');
+
+        recognition.onend = () => micButton.classList.remove('listening');
+        recognition.onerror = (event: any) => {
+            console.error('Speech recognition error:', event.error);
+            micButton.classList.remove('listening');
+        };
+        
+        let finalTranscript = inputElement.value ? inputElement.value.trim() + ' ' : '';
+
+        recognition.onresult = (event: any) => {
+            let interimTranscript = '';
+            for (let i = event.resultIndex; i < event.results.length; ++i) {
+                if (event.results[i].isFinal) {
+                    finalTranscript += event.results[i][0].transcript.trim() + '. ';
+                } else {
+                    interimTranscript += event.results[i][0].transcript;
+                }
+            }
+            inputElement.value = finalTranscript + interimTranscript;
+            autoResizeTextarea(inputElement);
+        };
+
+        recognition.start();
+    });
+
+    wrapper.appendChild(micButton);
+}
+
+
+function addExpansionLoopFieldset(container: HTMLElement, index: number) {
+    const fieldset = document.createElement('fieldset');
+    fieldset.className = 'expansion-loop-entry';
+    fieldset.dataset.index = String(index);
+
+    const legend = document.createElement('legend');
+    legend.textContent = `Expansion Loop #${index + 1}`;
+    fieldset.appendChild(legend);
+    
+    const removeBtn = document.createElement('button');
+    removeBtn.type = 'button';
+    removeBtn.innerHTML = '&times;';
+    removeBtn.className = 'remove-loop-button';
+    removeBtn.setAttribute('aria-label', `Remove Expansion Loop #${index + 1}`);
+    removeBtn.onclick = () => fieldset.remove();
+    fieldset.appendChild(removeBtn);
+
+    const dimensionFields = [
+        { id: `expansion-loop-leg1-${index}`, name: `expansion-loop-leg1-${index}`, label: 'Leg 1 Dimension (center-to-center, ft):' },
+        { id: `expansion-loop-leg2-${index}`, name: `expansion-loop-leg2-${index}`, label: 'Leg 2 Dimension (center-to-center, ft):' },
+        { id: `expansion-loop-leg3-${index}`, name: `expansion-loop-leg3-${index}`, label: 'Leg 3 Dimension (center-to-center, ft):' }
+    ];
+
+    dimensionFields.forEach(df => {
+        const fieldWrapper = document.createElement('div');
+        fieldWrapper.className = 'form-field-inline';
+        const dimLabel = document.createElement('label');
+        dimLabel.htmlFor = df.id;
+        dimLabel.textContent = df.label;
+        const dimInput = document.createElement('input');
+        dimInput.type = 'number';
+        dimInput.id = df.id;
+        dimInput.name = df.name;
+        dimInput.placeholder = 'feet';
+        fieldWrapper.appendChild(dimLabel);
+        fieldWrapper.appendChild(dimInput);
+        fieldset.appendChild(fieldWrapper);
+    });
+
+    const sourceFieldset = document.createElement('fieldset');
+    sourceFieldset.className = 'assessment-options-group';
+    const sourceLegend = document.createElement('legend');
+    sourceLegend.textContent = 'Dimension Source';
+    sourceFieldset.appendChild(sourceLegend);
+
+    const sourceOptions = ['Measured', 'Assumed', 'Obtained from records', 'Other'];
+    sourceOptions.forEach((sOpt, radioIndex) => {
+        const radioItem = document.createElement('div');
+        radioItem.className = 'radio-item-inline';
+        const radioInput = document.createElement('input');
+        radioInput.type = 'radio';
+        const radioId = `expansion-loop-source-${index}-${radioIndex}`;
+        radioInput.id = radioId;
+        radioInput.name = `expansion-loop-dimension-source-${index}`;
+        radioInput.value = sOpt;
+        const radioLabel = document.createElement('label');
+        radioLabel.htmlFor = radioId;
+        radioLabel.textContent = sOpt;
+        radioItem.appendChild(radioInput);
+        radioItem.appendChild(radioLabel);
+        sourceFieldset.appendChild(radioItem);
+    });
+    fieldset.appendChild(sourceFieldset);
+
+    container.appendChild(fieldset);
+}
+
+function handleAbutmentAChange(event: Event) {
+    const abutmentASelect = event.target as HTMLSelectElement;
+    const abutmentBSelect = document.getElementById('abutment-b-location') as HTMLSelectElement;
+    if (!abutmentBSelect) return;
+
+    const selectedValue = abutmentASelect.value;
+    let oppositeValue = '';
+
+    switch (selectedValue) {
+        case 'north':
+            oppositeValue = 'south';
+            break;
+        case 'south':
+            oppositeValue = 'north';
+            break;
+        case 'east':
+            oppositeValue = 'west';
+            break;
+        case 'west':
+            oppositeValue = 'east';
+            break;
+        default:
+            oppositeValue = ''; // Handle the "Select Direction..." case
+    }
+    
+    abutmentBSelect.value = oppositeValue;
+}
+
+
+function createFieldElement(field: FormField): HTMLElement {
+    const fieldContainer = document.createElement('div');
+    fieldContainer.classList.add('form-field');
+    if (field.containerId) {
+        fieldContainer.id = field.containerId;
+    }
+
+    const labelElement = document.createElement('label');
+    labelElement.htmlFor = field.id;
+    labelElement.textContent = field.label;
+    if (field.type !== 'checkbox-group' && field.type !== 'radio-group' && field.type !== 'clearance-group') {
+        fieldContainer.appendChild(labelElement);
+    }
+    
+    let inputWrapper: HTMLElement;
+    if (field.type === 'textarea' || voiceEnabledFieldIds.includes(field.id)) {
+        inputWrapper = document.createElement('div');
+        inputWrapper.classList.add('input-with-mic-wrapper');
+        fieldContainer.appendChild(inputWrapper);
+    } else {
+        inputWrapper = fieldContainer;
+    }
+    
+    if (field.type === 'select') {
+        const select = document.createElement('select');
+        select.id = field.id;
+        select.name = field.id;
+        if (field.required) select.required = true;
+
+        if (field.options) {
+            field.options.forEach(opt => {
+                const option = document.createElement('option');
+                option.value = opt.value;
+                option.textContent = opt.text;
+                if (opt.value === '' && !field.defaultValue) {
+                    option.disabled = true;
+                    option.selected = true; 
+                }
+                select.appendChild(option);
+            });
+        }
+        if (field.defaultValue) {
+            select.value = field.defaultValue;
+        }
+        inputWrapper.appendChild(select);
+
+    } else if (field.type === 'checkbox-group' || field.type === 'radio-group') {
+        const fieldset = document.createElement('fieldset');
+        fieldset.classList.add(`${field.type}-fieldset`);
+
+        const legend = document.createElement('legend');
+        legend.textContent = field.label;
+        fieldset.appendChild(legend);
+
+        if (field.checkboxOptions) {
+            field.checkboxOptions.forEach(opt => {
+                const itemContainer = document.createElement('div');
+                itemContainer.classList.add(`${field.type === 'radio-group' ? 'radio' : 'checkbox'}-item`);
+
+                const input = document.createElement('input');
+                input.type = field.type === 'radio-group' ? 'radio' : 'checkbox';
+                input.id = `${field.id}-${opt.value.toLowerCase().replace(/\s+/g, '-')}`;
+                input.name = field.id;
+                input.value = opt.value;
+
+                const itemLabel = document.createElement('label');
+                itemLabel.htmlFor = input.id;
+                itemLabel.textContent = opt.text;
+
+                itemContainer.appendChild(input);
+                itemContainer.appendChild(itemLabel);
+
+                // --- Special handling for expansion features ---
+                if (field.id === 'expansion-feature') {
+                    if (opt.value === 'expansion_loop') {
+                        const detailsContainer = document.createElement('div');
+                        detailsContainer.id = 'expansion-loop-details-container';
+                        detailsContainer.className = 'expansion-loop-details';
+                        detailsContainer.style.display = 'none'; // Initially hidden
+
+                        const loopList = document.createElement('div');
+                        loopList.id = 'expansion-loop-list';
+                        detailsContainer.appendChild(loopList);
+
+                        const addButtonContainer = document.createElement('div');
+                        addButtonContainer.className = 'add-loop-button-container';
+                        const addButton = document.createElement('button');
+                        addButton.id = 'add-expansion-loop-button';
+                        addButton.type = 'button';
+                        addButton.textContent = '+ Add Expansion Loop';
+                        addButton.className = 'control-button';
+                        addButtonContainer.appendChild(addButton);
+                        detailsContainer.appendChild(addButtonContainer);
+
+                        itemContainer.appendChild(detailsContainer);
+
+                        input.addEventListener('change', () => {
+                            if (input.checked) {
+                                detailsContainer.style.display = 'block';
+                            } else {
+                                detailsContainer.style.display = 'none';
+                                loopList.innerHTML = ''; // Clear added loops when unchecked
+                            }
+                        });
+                    } else {
+                        const quantityInput = document.createElement('input');
+                        quantityInput.type = 'number';
+                        quantityInput.min = '1';
+                        quantityInput.step = '1';
+                        quantityInput.placeholder = 'Qty';
+                        quantityInput.className = 'quantity-input';
+                        quantityInput.id = `${input.id}-quantity`;
+                        quantityInput.style.display = 'none'; // Initially hidden
+
+                        input.addEventListener('change', () => {
+                            if (input.checked) {
+                                quantityInput.style.display = 'inline-block';
+                                if (!quantityInput.value) {
+                                   quantityInput.value = '1'; // Default to 1 only if empty
+                                }
+                            } else {
+                                quantityInput.style.display = 'none';
+                                quantityInput.value = ''; // Clear value when unchecked
+                            }
+                        });
+                        itemContainer.appendChild(quantityInput);
+                    }
+                }
+                fieldset.appendChild(itemContainer);
+            });
+        }
+        inputWrapper.appendChild(fieldset);
+
+    } else if (field.type === 'clearance-group') {
+        const fieldset = document.createElement('fieldset');
+        fieldset.classList.add('clearance-group-fieldset');
+        
+        const legend = document.createElement('legend');
+        legend.textContent = field.label;
+        fieldset.appendChild(legend);
+
+        if (field.options) {
+            field.options.forEach(opt => {
+                const itemContainer = document.createElement('div');
+                itemContainer.classList.add('clearance-item');
+                
+                const itemLabel = document.createElement('label');
+                itemLabel.textContent = opt.text;
+                itemLabel.htmlFor = `${field.id}-${opt.value}-value`;
+
+                const inputGroup = document.createElement('div');
+                inputGroup.classList.add('clearance-input-group');
+
+                const valueInput = document.createElement('input');
+                valueInput.type = 'number';
+                valueInput.id = `${field.id}-${opt.value}-value`;
+                valueInput.name = `${field.id}-${opt.value}-value`;
+                valueInput.placeholder = 'Distance';
+
+                const unitSelect = document.createElement('select');
+                unitSelect.id = `${field.id}-${opt.value}-units`;
+                unitSelect.name = `${field.id}-${opt.value}-units`;
+
+                const ftOption = document.createElement('option');
+                ftOption.value = 'ft';
+                ftOption.textContent = 'ft';
+                unitSelect.appendChild(ftOption);
+
+                const inOption = document.createElement('option');
+                inOption.value = 'in';
+                inOption.textContent = 'in';
+                unitSelect.appendChild(inOption);
+                
+                inputGroup.appendChild(valueInput);
+                inputGroup.appendChild(unitSelect);
+
+                itemContainer.appendChild(itemLabel);
+                itemContainer.appendChild(inputGroup);
+                fieldset.appendChild(itemContainer);
+            });
+        }
+        fieldContainer.appendChild(fieldset);
+    } else if (field.type === 'textarea') {
+        const textarea = document.createElement('textarea');
+        textarea.id = field.id;
+        textarea.name = field.id;
+        if (field.placeholder) textarea.placeholder = field.placeholder;
+        if (field.defaultValue) textarea.value = field.defaultValue;
+        textarea.addEventListener('input', () => autoResizeTextarea(textarea));
+        inputWrapper.appendChild(textarea);
+        if (voiceEnabledFieldIds.includes(field.id)) {
+            addMicrophoneButton(inputWrapper as HTMLElement, textarea);
+            addImproveButton(inputWrapper as HTMLElement, textarea);
+        }
+
+    } else if (field.type === 'file') {
+        const fileInput = document.createElement('input');
+        fileInput.type = 'file';
+        fileInput.id = field.id;
+        fileInput.name = field.id;
+        if (field.multiple) fileInput.multiple = true;
+        if (field.accept) fileInput.accept = field.accept;
+        
+        fileInput.addEventListener('change', async (e) => {
+            const files = (e.target as HTMLInputElement).files;
+            if (files) {
+                fileDataStore[field.id] = fileDataStore[field.id] || [];
+                for (const file of Array.from(files)) {
+                  try {
+                    const dataUrl = await readFileAsDataURL(file);
+                    fileDataStore[field.id].push({ name: file.name, comment: '', dataUrl, type: file.type });
+                  } catch (error) {
+                    console.error("Error reading file:", file.name, error);
+                    alert(`Could not read file: ${file.name}`);
+                  }
+                }
+                renderFileList(field.id);
+            }
+        });
+        inputWrapper.appendChild(fileInput);
+        
+        const listContainer = document.createElement('div');
+        listContainer.id = `${field.id}-list-container`;
+        listContainer.classList.add('file-list-container');
+        fieldContainer.appendChild(listContainer);
+
+    } else if (field.type === 'date' || field.type === 'text' || field.type === 'number') {
+        const input = document.createElement('input');
+        input.type = field.type;
+        input.id = field.id;
+        input.name = field.id;
+        if (field.placeholder) input.placeholder = field.placeholder;
+        if (field.defaultValue) input.value = field.defaultValue;
+        inputWrapper.appendChild(input);
+    }
+
+    // This block is now generalized to apply to any field with assessmentOptions
+    if (field.assessmentOptions) {
+        const assessmentGroup = document.createElement('div');
+        assessmentGroup.classList.add('assessment-options-group');
+        field.assessmentOptions.forEach((optionText, index) => {
+            const radioItem = document.createElement('div');
+            radioItem.classList.add('radio-item-inline');
+            const radioInput = document.createElement('input');
+            radioInput.type = 'radio';
+            const radioId = `${field.id}-assessment-${index}`;
+            radioInput.id = radioId;
+            radioInput.name = `${field.id}-assessment`;
+            radioInput.value = optionText;
+            
+            if (field.defaultAssessmentOption === optionText) {
+                radioInput.checked = true;
+            }
+            
+            const radioLabel = document.createElement('label');
+            radioLabel.htmlFor = radioId;
+            radioLabel.textContent = optionText;
+
+            radioItem.appendChild(radioInput);
+            radioItem.appendChild(radioLabel);
+            assessmentGroup.appendChild(radioItem);
+        });
+        fieldContainer.appendChild(assessmentGroup);
+    }
+
+    return fieldContainer;
+}
 
 // Data definitions for conditional selects
 const systemData = {
@@ -321,6 +983,13 @@ const formSections: FormSectionData[] = [
                 containerId: 'system-select-container'
             },
             { label: "MAOP:", id: "maop", type: "text", placeholder: "Max. Allowable Operating Pressure" },
+            {
+                label: "Pipe Length (ft):",
+                id: "pipe-length",
+                type: "number",
+                placeholder: "e.g., 250",
+                assessmentOptions: ["Estimated", "Measured", "Obtained from construction records", "Measured from map", "Other"],
+            },
             {
                 label: "Pipe Diameter (inches):",
                 id: "pipe-diameter",
@@ -649,13 +1318,101 @@ const formSections: FormSectionData[] = [
     }
 ];
 
+// --- Gets all form data in a structured way ---
+function getFormData() {
+    const data: { [key: string]: any } = {};
+    const form = document.getElementById('assessment-form') as HTMLFormElement;
+    if (!form) return data;
+
+    formSections.forEach(section => {
+        section.fields.forEach(field => {
+            if (field.type === 'file') {
+                return;
+            }
+
+            if (field.type === 'clearance-group') {
+                if (field.options) {
+                    field.options.forEach(opt => {
+                        const valueId = `${field.id}-${opt.value}-value`;
+                        const unitId = `${field.id}-${opt.value}-units`;
+                        const valueEl = document.getElementById(valueId) as HTMLInputElement;
+                        const unitEl = document.getElementById(unitId) as HTMLSelectElement;
+
+                        if (valueEl && valueEl.value) {
+                            data[valueId] = valueEl.value;
+                            data[unitId] = unitEl.value;
+                        }
+                    });
+                }
+                return; // continue to next field
+            }
+
+            if (field.id === 'expansion-feature') {
+                const featureData: { [key: string]: number } = {};
+                const checkedInputs = form.querySelectorAll<HTMLInputElement>(`input[name="${field.id}"]:checked`);
+                checkedInputs.forEach(input => {
+                    if (input.value === 'expansion_loop') {
+                        featureData[input.value] = 1;
+                    } else {
+                        const quantityInput = document.getElementById(`${input.id}-quantity`) as HTMLInputElement;
+                        if (quantityInput && quantityInput.value) {
+                            const quantity = parseInt(quantityInput.value, 10);
+                            if (!isNaN(quantity) && quantity > 0) {
+                                featureData[input.value] = quantity;
+                            }
+                        } else {
+                             featureData[input.value] = 1;
+                        }
+                    }
+                });
+                data[field.id] = featureData;
+
+            } else if (field.type === 'checkbox-group') {
+                const checkedInputs = form.querySelectorAll<HTMLInputElement>(`input[name="${field.id}"]:checked`);
+                data[field.id] = Array.from(checkedInputs).map(input => input.value);
+            } else if (field.type === 'radio-group') {
+                const checkedInput = form.querySelector<HTMLInputElement>(`input[name="${field.id}"]:checked`);
+                data[field.id] = checkedInput ? checkedInput.value : '';
+            } else {
+                const element = document.getElementById(field.id) as HTMLInputElement | HTMLSelectElement | HTMLTextAreaElement;
+                if (element) {
+                    // Always record the value, regardless of visibility.
+                    data[field.id] = element.value;
+                } else {
+                    data[field.id] = '';
+                }
+            }
+
+            if (field.assessmentOptions) {
+                const assessmentKey = `${field.id}-assessment`;
+                const checkedInput = form.querySelector<HTMLInputElement>(`input[name="${assessmentKey}"]:checked`);
+                data[assessmentKey] = checkedInput ? checkedInput.value : '';
+            }
+        });
+    });
+
+    // Get expansion loop details if checked
+    const expansionLoopCheckbox = document.getElementById('expansion-feature-expansion_loop') as HTMLInputElement;
+    if (expansionLoopCheckbox?.checked) {
+        const loops: ExpansionLoopData[] = [];
+        const loopEntries = document.querySelectorAll<HTMLFieldSetElement>('.expansion-loop-entry');
+        loopEntries.forEach((fieldset, index) => {
+            const leg1 = (document.getElementById(`expansion-loop-leg1-${index}`) as HTMLInputElement)?.value || '';
+            const leg2 = (document.getElementById(`expansion-loop-leg2-${index}`) as HTMLInputElement)?.value || '';
+            const leg3 = (document.getElementById(`expansion-loop-leg3-${index}`) as HTMLInputElement)?.value || '';
+            const sourceRadio = form.querySelector<HTMLInputElement>(`input[name="expansion-loop-dimension-source-${index}"]:checked`);
+            const source = sourceRadio ? sourceRadio.value : '';
+            loops.push({ leg1, leg2, leg3, source });
+        });
+        data.expansion_loops = loops;
+    }
+
+    return data;
+}
+
+
 // --- Main Application Logic ---
 document.addEventListener('DOMContentLoaded', () => {
-
-    // --- Central data store for all file inputs ---
-    const fileDataStore: { [inputId: string]: FileWithComment[] } = {};
-
-    // --- Get all DOM elements once ---
     const form = document.getElementById('assessment-form') as HTMLFormElement;
     const guidelinesContainer = document.getElementById('process-guidelines-container') as HTMLElement;
     const saveButton = document.getElementById('save-assessment-button') as HTMLButtonElement;
@@ -673,1006 +1430,7 @@ document.addEventListener('DOMContentLoaded', () => {
     const adminLockedView = document.getElementById('admin-locked-view') as HTMLElement;
     const adminUnlockedView = document.getElementById('admin-unlocked-view') as HTMLElement;
 
-    // --- All Functions ---
 
-    // --- Helper to read a file as a Base64 Data URL ---
-    const readFileAsDataURL = (file: File): Promise<string> => {
-        return new Promise((resolve, reject) => {
-            const reader = new FileReader();
-            reader.onload = () => resolve(reader.result as string);
-            reader.onerror = (error) => reject(error);
-            reader.readAsDataURL(file);
-        });
-    };
-
-    // --- Helper to render the file list for a given input ---
-    function renderFileList(inputId: string) {
-        const container = document.getElementById(`${inputId}-list-container`);
-        if (!container) return;
-        
-        container.innerHTML = '';
-        const files = fileDataStore[inputId];
-
-        if (files && files.length > 0) {
-            const list = document.createElement('ul');
-            list.classList.add('file-comment-list');
-
-            files.forEach((fileInfo, index) => {
-                const listItem = document.createElement('li');
-                listItem.classList.add('file-comment-item');
-
-                const filePreviewContainer = document.createElement('div');
-                filePreviewContainer.classList.add('file-preview-container');
-
-                // Updated logic to handle renderable vs non-renderable images
-                if (fileInfo.type.startsWith('image/') && fileInfo.type !== 'image/tiff') {
-                    const img = document.createElement('img');
-                    img.src = fileInfo.dataUrl;
-                    img.classList.add('file-thumbnail');
-                    img.alt = `Thumbnail for ${fileInfo.name}`;
-                    filePreviewContainer.appendChild(img);
-                } else if (fileInfo.type.startsWith('image/')) { // Handles TIFF and other image types
-                    filePreviewContainer.classList.add('placeholder');
-                    filePreviewContainer.innerHTML = '<span>🖼️</span>'; // Picture/frame emoji
-                    filePreviewContainer.title = 'Image file (preview not supported for this format)';
-                } else { // Handles non-image files
-                    filePreviewContainer.classList.add('placeholder');
-                    filePreviewContainer.innerHTML = '<span>📄</span>'; // Document emoji
-                    filePreviewContainer.title = `Document file: ${fileInfo.type}`;
-                }
-
-                const fileInfoContainer = document.createElement('div');
-                fileInfoContainer.classList.add('file-info-container');
-                
-                const fileNameEl = document.createElement('div');
-                fileNameEl.classList.add('file-name');
-                fileNameEl.textContent = fileInfo.name;
-                
-                const commentInput = document.createElement('input');
-                commentInput.type = 'text';
-                commentInput.classList.add('file-comment-input');
-                commentInput.placeholder = 'Add a comment...';
-                commentInput.setAttribute('data-file-name', fileInfo.name);
-                commentInput.value = fileInfo.comment;
-                commentInput.addEventListener('change', (e) => {
-                    const newComment = (e.target as HTMLInputElement).value;
-                    if (fileDataStore[inputId] && fileDataStore[inputId][index]) {
-                        fileDataStore[inputId][index].comment = newComment;
-                    }
-                });
-
-                fileInfoContainer.appendChild(fileNameEl);
-                fileInfoContainer.appendChild(commentInput);
-                
-                listItem.appendChild(filePreviewContainer);
-                listItem.appendChild(fileInfoContainer);
-
-                // Add remove button
-                const removeButton = document.createElement('button');
-                removeButton.type = 'button';
-                removeButton.innerHTML = '&times;'; // '×' symbol
-                removeButton.className = 'remove-file-button';
-                removeButton.setAttribute('aria-label', `Remove ${fileInfo.name}`);
-                removeButton.onclick = () => {
-                    if (fileDataStore[inputId]) {
-                        fileDataStore[inputId].splice(index, 1);
-                        renderFileList(inputId); // Re-render the list
-                    }
-                };
-                listItem.appendChild(removeButton);
-
-                list.appendChild(listItem);
-            });
-            container.appendChild(list);
-        } else {
-            container.innerHTML = `<p class="no-files-message">No files selected.</p>`;
-        }
-    }
-
-    // --- Helper to auto-resize textareas ---
-    function autoResizeTextarea(textarea: HTMLTextAreaElement) {
-        textarea.style.height = 'auto'; // Reset height to recalculate
-        textarea.style.height = `${textarea.scrollHeight}px`;
-    }
-
-    // --- Helper to add text improvement button ---
-    function addImproveButton(wrapper: HTMLElement, inputElement: HTMLTextAreaElement) {
-        const improveButton = document.createElement('button');
-        improveButton.type = 'button';
-        improveButton.classList.add('improve-button');
-        improveButton.textContent = 'Improve';
-        improveButton.setAttribute('aria-label', `Improve text for ${inputElement.id}`);
-
-        improveButton.addEventListener('click', async () => {
-            const apiKey = GEMINI_API_KEY;
-            const isApiKeyInvalid = !apiKey || apiKey.trim() === '' || apiKey.startsWith("%%") || apiKey === 'null' || apiKey === 'undefined';
-
-            if (isApiKeyInvalid) {
-                alert("Admin feature error: The API key has not been configured in the deployment environment.");
-                return;
-            }
-
-            const originalText = inputElement.value.trim();
-            if (!originalText) {
-                alert("There is no text to improve.");
-                return;
-            }
-
-            improveButton.disabled = true;
-            improveButton.textContent = 'Working...';
-            
-            const oldSuggestions = wrapper.querySelector('.suggestions-container');
-            if (oldSuggestions) {
-                oldSuggestions.remove();
-            }
-            
-            try {
-                const ai = new GoogleGenAI({apiKey: apiKey});
-                const prompt = `Rewrite the following text for a professional engineering field report. Your response must be in a JSON array format containing 3 distinct alternative versions, like ["suggestion 1", "suggestion 2", "suggestion 3"]. For each suggestion, use well-structured paragraphs and professional, formal language appropriate for an engineering document. Improve clarity, grammar, and sentence structure, while preserving all original facts and the core meaning. Do not add any new information. Original text: "${originalText}"`;
-                
-                const response: GenerateContentResponse = await ai.models.generateContent({
-                    model: 'gemini-2.5-flash-preview-04-17',
-                    contents: prompt,
-                    config: { responseMimeType: "application/json" }
-                });
-                
-                let suggestions: string[] = [];
-                let jsonStr = response.text.trim();
-                const fenceRegex = /^```(\w*)?\s*\n?(.*?)\n?\s*```$/s;
-                const match = jsonStr.match(fenceRegex);
-                if (match && match[2]) {
-                  jsonStr = match[2].trim();
-                }
-                
-                try {
-                    const parsedData = JSON.parse(jsonStr);
-                    if (Array.isArray(parsedData) && parsedData.every(item => typeof item === 'string')) {
-                        suggestions = parsedData;
-                    } else {
-                        suggestions = [response.text];
-                    }
-                } catch (e) {
-                    suggestions = [response.text]; 
-                }
-
-                if (suggestions.length === 0) {
-                    alert("Could not generate improvement suggestions.");
-                    return;
-                }
-
-                const suggestionsContainer = document.createElement('div');
-                suggestionsContainer.className = 'suggestions-container';
-
-                const header = document.createElement('div');
-                header.className = 'suggestions-header';
-                const title = document.createElement('span');
-                title.textContent = 'Suggestions';
-                const closeBtn = document.createElement('button');
-                closeBtn.innerHTML = '&times;';
-                closeBtn.className = 'suggestions-close-btn';
-                closeBtn.setAttribute('aria-label', 'Close suggestions');
-                closeBtn.onclick = () => suggestionsContainer.remove();
-                header.appendChild(title);
-                header.appendChild(closeBtn);
-                suggestionsContainer.appendChild(header);
-
-                suggestions.forEach(suggestionText => {
-                    const item = document.createElement('div');
-                    item.className = 'suggestion-item';
-                    item.textContent = suggestionText;
-                    item.tabIndex = 0;
-                    const selectSuggestion = () => {
-                        inputElement.value = suggestionText;
-                        autoResizeTextarea(inputElement);
-                        suggestionsContainer.remove();
-                    };
-                    item.onclick = selectSuggestion;
-                    item.onkeydown = (e) => {
-                        if (e.key === 'Enter' || e.key === ' ') {
-                            selectSuggestion();
-                        }
-                    };
-                    suggestionsContainer.appendChild(item);
-                });
-
-                wrapper.appendChild(suggestionsContainer);
-
-            } catch (error) {
-                console.error("Error improving text:", error);
-                alert("Could not retrieve suggestions. Please check the console for more details.");
-            } finally {
-                improveButton.disabled = false;
-                improveButton.textContent = 'Improve';
-            }
-        });
-
-        wrapper.appendChild(improveButton);
-    }
-
-    // --- Helper to add voice-to-text microphone button ---
-    function addMicrophoneButton(wrapper: HTMLElement, inputElement: HTMLTextAreaElement) {
-        const SpeechRecognition = window.SpeechRecognition || window.webkitSpeechRecognition;
-        if (!SpeechRecognition) return;
-
-        const micButton = document.createElement('button');
-        micButton.type = 'button';
-        micButton.classList.add('mic-button');
-        micButton.innerHTML = '&#127908;';
-        micButton.setAttribute('aria-label', `Start voice input for ${inputElement.id}`);
-
-        micButton.addEventListener('click', () => {
-            const recognition = new SpeechRecognition();
-            recognition.continuous = false;
-            recognition.interimResults = true;
-            recognition.lang = 'en-US';
-
-            micButton.classList.add('listening');
-
-            recognition.onend = () => micButton.classList.remove('listening');
-            recognition.onerror = (event: any) => {
-                console.error('Speech recognition error:', event.error);
-                micButton.classList.remove('listening');
-            };
-            
-            let finalTranscript = inputElement.value ? inputElement.value.trim() + ' ' : '';
-
-            recognition.onresult = (event: any) => {
-                let interimTranscript = '';
-                for (let i = event.resultIndex; i < event.results.length; ++i) {
-                    if (event.results[i].isFinal) {
-                        finalTranscript += event.results[i][0].transcript.trim() + '. ';
-                    } else {
-                        interimTranscript += event.results[i][0].transcript;
-                    }
-                }
-                inputElement.value = finalTranscript + interimTranscript;
-                autoResizeTextarea(inputElement);
-            };
-
-            recognition.start();
-        });
-
-        wrapper.appendChild(micButton);
-    }
-
-    function addExpansionLoopFieldset(container: HTMLElement, index: number) {
-        const fieldset = document.createElement('fieldset');
-        fieldset.className = 'expansion-loop-entry';
-        fieldset.dataset.index = String(index);
-
-        const legend = document.createElement('legend');
-        legend.textContent = `Expansion Loop #${index + 1}`;
-        fieldset.appendChild(legend);
-        
-        const removeBtn = document.createElement('button');
-        removeBtn.type = 'button';
-        removeBtn.innerHTML = '&times;';
-        removeBtn.className = 'remove-loop-button';
-        removeBtn.setAttribute('aria-label', `Remove Expansion Loop #${index + 1}`);
-        removeBtn.onclick = () => fieldset.remove();
-        fieldset.appendChild(removeBtn);
-
-        const dimensionFields = [
-            { id: `expansion-loop-leg1-${index}`, name: `expansion-loop-leg1-${index}`, label: 'Leg 1 Dimension (center-to-center, ft):' },
-            { id: `expansion-loop-leg2-${index}`, name: `expansion-loop-leg2-${index}`, label: 'Leg 2 Dimension (center-to-center, ft):' },
-            { id: `expansion-loop-leg3-${index}`, name: `expansion-loop-leg3-${index}`, label: 'Leg 3 Dimension (center-to-center, ft):' }
-        ];
-
-        dimensionFields.forEach(df => {
-            const fieldWrapper = document.createElement('div');
-            fieldWrapper.className = 'form-field-inline';
-            const dimLabel = document.createElement('label');
-            dimLabel.htmlFor = df.id;
-            dimLabel.textContent = df.label;
-            const dimInput = document.createElement('input');
-            dimInput.type = 'number';
-            dimInput.id = df.id;
-            dimInput.name = df.name;
-            dimInput.placeholder = 'feet';
-            fieldWrapper.appendChild(dimLabel);
-            fieldWrapper.appendChild(dimInput);
-            fieldset.appendChild(fieldWrapper);
-        });
-
-        const sourceFieldset = document.createElement('fieldset');
-        sourceFieldset.className = 'assessment-options-group';
-        const sourceLegend = document.createElement('legend');
-        sourceLegend.textContent = 'Dimension Source';
-        sourceFieldset.appendChild(sourceLegend);
-
-        const sourceOptions = ['Measured', 'Assumed', 'Obtained from records', 'Other'];
-        sourceOptions.forEach((sOpt, radioIndex) => {
-            const radioItem = document.createElement('div');
-            radioItem.className = 'radio-item-inline';
-            const radioInput = document.createElement('input');
-            radioInput.type = 'radio';
-            const radioId = `expansion-loop-source-${index}-${radioIndex}`;
-            radioInput.id = radioId;
-            radioInput.name = `expansion-loop-dimension-source-${index}`;
-            radioInput.value = sOpt;
-            const radioLabel = document.createElement('label');
-            radioLabel.htmlFor = radioId;
-            radioLabel.textContent = sOpt;
-            radioItem.appendChild(radioInput);
-            radioItem.appendChild(radioLabel);
-            sourceFieldset.appendChild(radioItem);
-        });
-        fieldset.appendChild(sourceFieldset);
-
-        container.appendChild(fieldset);
-    }
-
-    function handleAbutmentAChange(event: Event) {
-        const abutmentASelect = event.target as HTMLSelectElement;
-        const abutmentBSelect = document.getElementById('abutment-b-location') as HTMLSelectElement;
-        if (!abutmentBSelect) return;
-
-        const selectedValue = abutmentASelect.value;
-        let oppositeValue = '';
-
-        switch (selectedValue) {
-            case 'north':
-                oppositeValue = 'south';
-                break;
-            case 'south':
-                oppositeValue = 'north';
-                break;
-            case 'east':
-                oppositeValue = 'west';
-                break;
-            case 'west':
-                oppositeValue = 'east';
-                break;
-            default:
-                oppositeValue = ''; // Handle the "Select Direction..." case
-        }
-        
-        abutmentBSelect.value = oppositeValue;
-    }
-
-    function createFieldElement(field: FormField): HTMLElement {
-        const fieldContainer = document.createElement('div');
-        fieldContainer.classList.add('form-field');
-        if (field.containerId) {
-            fieldContainer.id = field.containerId;
-        }
-
-        const labelElement = document.createElement('label');
-        labelElement.htmlFor = field.id;
-        labelElement.textContent = field.label;
-        if (field.type !== 'checkbox-group' && field.type !== 'radio-group' && field.type !== 'clearance-group') {
-            fieldContainer.appendChild(labelElement);
-        }
-        
-        let inputWrapper: HTMLElement;
-        if (field.type === 'textarea' || voiceEnabledFieldIds.includes(field.id)) {
-            inputWrapper = document.createElement('div');
-            inputWrapper.classList.add('input-with-mic-wrapper');
-            fieldContainer.appendChild(inputWrapper);
-        } else {
-            inputWrapper = fieldContainer;
-        }
-        
-        if (field.type === 'select') {
-            const select = document.createElement('select');
-            select.id = field.id;
-            select.name = field.id;
-            if (field.required) select.required = true;
-
-            if (field.options) {
-                field.options.forEach(opt => {
-                    const option = document.createElement('option');
-                    option.value = opt.value;
-                    option.textContent = opt.text;
-                    if (opt.value === '' && !field.defaultValue) {
-                        option.disabled = true;
-                        option.selected = true; 
-                    }
-                    select.appendChild(option);
-                });
-            }
-            if (field.defaultValue) {
-                select.value = field.defaultValue;
-            }
-            inputWrapper.appendChild(select);
-
-        } else if (field.type === 'checkbox-group' || field.type === 'radio-group') {
-            const fieldset = document.createElement('fieldset');
-            fieldset.classList.add(`${field.type}-fieldset`);
-
-            const legend = document.createElement('legend');
-            legend.textContent = field.label;
-            fieldset.appendChild(legend);
-
-            if (field.checkboxOptions) {
-                field.checkboxOptions.forEach(opt => {
-                    const itemContainer = document.createElement('div');
-                    itemContainer.classList.add(`${field.type === 'radio-group' ? 'radio' : 'checkbox'}-item`);
-
-                    const input = document.createElement('input');
-                    input.type = field.type === 'radio-group' ? 'radio' : 'checkbox';
-                    input.id = `${field.id}-${opt.value.toLowerCase().replace(/\s+/g, '-')}`;
-                    input.name = field.id;
-                    input.value = opt.value;
-
-                    const itemLabel = document.createElement('label');
-                    itemLabel.htmlFor = input.id;
-                    itemLabel.textContent = opt.text;
-
-                    itemContainer.appendChild(input);
-                    itemContainer.appendChild(itemLabel);
-
-                    // --- Special handling for expansion features ---
-                    if (field.id === 'expansion-feature') {
-                        if (opt.value === 'expansion_loop') {
-                            const detailsContainer = document.createElement('div');
-                            detailsContainer.id = 'expansion-loop-details-container';
-                            detailsContainer.className = 'expansion-loop-details';
-                            detailsContainer.style.display = 'none'; // Initially hidden
-
-                            const loopList = document.createElement('div');
-                            loopList.id = 'expansion-loop-list';
-                            detailsContainer.appendChild(loopList);
-
-                            const addButtonContainer = document.createElement('div');
-                            addButtonContainer.className = 'add-loop-button-container';
-                            const addButton = document.createElement('button');
-                            addButton.id = 'add-expansion-loop-button';
-                            addButton.type = 'button';
-                            addButton.textContent = '+ Add Expansion Loop';
-                            addButton.className = 'control-button';
-                            addButtonContainer.appendChild(addButton);
-                            detailsContainer.appendChild(addButtonContainer);
-
-                            itemContainer.appendChild(detailsContainer);
-
-                            input.addEventListener('change', () => {
-                                if (input.checked) {
-                                    detailsContainer.style.display = 'block';
-                                } else {
-                                    detailsContainer.style.display = 'none';
-                                    loopList.innerHTML = ''; // Clear added loops when unchecked
-                                }
-                            });
-                        } else {
-                            const quantityInput = document.createElement('input');
-                            quantityInput.type = 'number';
-                            quantityInput.min = '1';
-                            quantityInput.step = '1';
-                            quantityInput.placeholder = 'Qty';
-                            quantityInput.className = 'quantity-input';
-                            quantityInput.id = `${input.id}-quantity`;
-                            quantityInput.style.display = 'none'; // Initially hidden
-
-                            input.addEventListener('change', () => {
-                                if (input.checked) {
-                                    quantityInput.style.display = 'inline-block';
-                                    if (!quantityInput.value) {
-                                       quantityInput.value = '1'; // Default to 1 only if empty
-                                    }
-                                } else {
-                                    quantityInput.style.display = 'none';
-                                    quantityInput.value = ''; // Clear value when unchecked
-                                }
-                            });
-                            itemContainer.appendChild(quantityInput);
-                        }
-                    }
-                    fieldset.appendChild(itemContainer);
-                });
-            }
-            inputWrapper.appendChild(fieldset);
-
-        } else if (field.type === 'clearance-group') {
-            const fieldset = document.createElement('fieldset');
-            fieldset.classList.add('clearance-group-fieldset');
-            
-            const legend = document.createElement('legend');
-            legend.textContent = field.label;
-            fieldset.appendChild(legend);
-
-            if (field.options) {
-                field.options.forEach(opt => {
-                    const itemContainer = document.createElement('div');
-                    itemContainer.classList.add('clearance-item');
-                    
-                    const itemLabel = document.createElement('label');
-                    itemLabel.textContent = opt.text;
-                    itemLabel.htmlFor = `${field.id}-${opt.value}-value`;
-
-                    const inputGroup = document.createElement('div');
-                    inputGroup.classList.add('clearance-input-group');
-
-                    const valueInput = document.createElement('input');
-                    valueInput.type = 'number';
-                    valueInput.id = `${field.id}-${opt.value}-value`;
-                    valueInput.name = `${field.id}-${opt.value}-value`;
-                    valueInput.placeholder = 'Distance';
-
-                    const unitSelect = document.createElement('select');
-                    unitSelect.id = `${field.id}-${opt.value}-units`;
-                    unitSelect.name = `${field.id}-${opt.value}-units`;
-
-                    const ftOption = document.createElement('option');
-                    ftOption.value = 'ft';
-                    ftOption.textContent = 'ft';
-                    unitSelect.appendChild(ftOption);
-
-                    const inOption = document.createElement('option');
-                    inOption.value = 'in';
-                    inOption.textContent = 'in';
-                    unitSelect.appendChild(inOption);
-                    
-                    inputGroup.appendChild(valueInput);
-                    inputGroup.appendChild(unitSelect);
-
-                    itemContainer.appendChild(itemLabel);
-                    itemContainer.appendChild(inputGroup);
-                    fieldset.appendChild(itemContainer);
-                });
-            }
-            fieldContainer.appendChild(fieldset);
-        } else if (field.type === 'textarea') {
-            const textarea = document.createElement('textarea');
-            textarea.id = field.id;
-            textarea.name = field.id;
-            if (field.placeholder) textarea.placeholder = field.placeholder;
-            if (field.defaultValue) textarea.value = field.defaultValue;
-            textarea.addEventListener('input', () => autoResizeTextarea(textarea));
-            inputWrapper.appendChild(textarea);
-            if (voiceEnabledFieldIds.includes(field.id)) {
-                addMicrophoneButton(inputWrapper as HTMLElement, textarea);
-                addImproveButton(inputWrapper as HTMLElement, textarea);
-            }
-
-        } else if (field.type === 'file') {
-            const fileInput = document.createElement('input');
-            fileInput.type = 'file';
-            fileInput.id = field.id;
-            fileInput.name = field.id;
-            if (field.multiple) fileInput.multiple = true;
-            if (field.accept) fileInput.accept = field.accept;
-            
-            fileInput.addEventListener('change', async (e) => {
-                const files = (e.target as HTMLInputElement).files;
-                if (files) {
-                    fileDataStore[field.id] = fileDataStore[field.id] || [];
-                    for (const file of Array.from(files)) {
-                      try {
-                        const dataUrl = await readFileAsDataURL(file);
-                        fileDataStore[field.id].push({ name: file.name, comment: '', dataUrl, type: file.type });
-                      } catch (error) {
-                        console.error("Error reading file:", file.name, error);
-                        alert(`Could not read file: ${file.name}`);
-                      }
-                    }
-                    renderFileList(field.id);
-                }
-            });
-            inputWrapper.appendChild(fileInput);
-            
-            const listContainer = document.createElement('div');
-            listContainer.id = `${field.id}-list-container`;
-            listContainer.classList.add('file-list-container');
-            fieldContainer.appendChild(listContainer);
-
-        } else if (field.type === 'date' || field.type === 'text' || field.type === 'number') {
-            const input = document.createElement('input');
-            input.type = field.type;
-            input.id = field.id;
-            input.name = field.id;
-            if (field.placeholder) input.placeholder = field.placeholder;
-            if (field.defaultValue) input.value = field.defaultValue;
-            inputWrapper.appendChild(input);
-        }
-
-        // This block is now generalized to apply to any field with assessmentOptions
-        if (field.assessmentOptions) {
-            const assessmentGroup = document.createElement('div');
-            assessmentGroup.classList.add('assessment-options-group');
-            field.assessmentOptions.forEach((optionText, index) => {
-                const radioItem = document.createElement('div');
-                radioItem.classList.add('radio-item-inline');
-                const radioInput = document.createElement('input');
-                radioInput.type = 'radio';
-                const radioId = `${field.id}-assessment-${index}`;
-                radioInput.id = radioId;
-                radioInput.name = `${field.id}-assessment`;
-                radioInput.value = optionText;
-                
-                if (field.defaultAssessmentOption === optionText) {
-                    radioInput.checked = true;
-                }
-                
-                const radioLabel = document.createElement('label');
-                radioLabel.htmlFor = radioId;
-                radioLabel.textContent = optionText;
-
-                radioItem.appendChild(radioInput);
-                radioItem.appendChild(radioLabel);
-                assessmentGroup.appendChild(radioItem);
-            });
-            fieldContainer.appendChild(assessmentGroup);
-        }
-
-        return fieldContainer;
-    }
-
-    // --- Gets all form data in a structured way ---
-    function getFormData() {
-        const data: { [key: string]: any } = {};
-        const form = document.getElementById('assessment-form') as HTMLFormElement;
-        if (!form) return data;
-
-        formSections.forEach(section => {
-            section.fields.forEach(field => {
-                if (field.type === 'file') {
-                    return;
-                }
-
-                if (field.type === 'clearance-group') {
-                    if (field.options) {
-                        field.options.forEach(opt => {
-                            const valueId = `${field.id}-${opt.value}-value`;
-                            const unitId = `${field.id}-${opt.value}-units`;
-                            const valueEl = document.getElementById(valueId) as HTMLInputElement;
-                            const unitEl = document.getElementById(unitId) as HTMLSelectElement;
-
-                            if (valueEl && valueEl.value) {
-                                data[valueId] = valueEl.value;
-                                data[unitId] = unitEl.value;
-                            }
-                        });
-                    }
-                    return; // continue to next field
-                }
-
-                if (field.id === 'expansion-feature') {
-                    const featureData: { [key: string]: number } = {};
-                    const checkedInputs = form.querySelectorAll<HTMLInputElement>(`input[name="${field.id}"]:checked`);
-                    checkedInputs.forEach(input => {
-                        if (input.value === 'expansion_loop') {
-                            featureData[input.value] = 1;
-                        } else {
-                            const quantityInput = document.getElementById(`${input.id}-quantity`) as HTMLInputElement;
-                            if (quantityInput && quantityInput.value) {
-                                const quantity = parseInt(quantityInput.value, 10);
-                                if (!isNaN(quantity) && quantity > 0) {
-                                    featureData[input.value] = quantity;
-                                }
-                            } else {
-                                 featureData[input.value] = 1;
-                            }
-                        }
-                    });
-                    data[field.id] = featureData;
-
-                } else if (field.type === 'checkbox-group') {
-                    const checkedInputs = form.querySelectorAll<HTMLInputElement>(`input[name="${field.id}"]:checked`);
-                    data[field.id] = Array.from(checkedInputs).map(input => input.value);
-                } else if (field.type === 'radio-group') {
-                    const checkedInput = form.querySelector<HTMLInputElement>(`input[name="${field.id}"]:checked`);
-                    data[field.id] = checkedInput ? checkedInput.value : '';
-                } else {
-                    const element = document.getElementById(field.id) as HTMLInputElement | HTMLSelectElement | HTMLTextAreaElement;
-                    if (element) {
-                        // For conditional fields, only record if their container is visible
-                        if (field.containerId) {
-                            const container = document.getElementById(field.containerId);
-                            if (container && container.style.display !== 'none') {
-                               data[field.id] = element.value;
-                            }
-                        } else {
-                           data[field.id] = element.value;
-                        }
-                    } else {
-                        data[field.id] = '';
-                    }
-                }
-
-                if (field.assessmentOptions) {
-                    const assessmentKey = `${field.id}-assessment`;
-                    const checkedInput = form.querySelector<HTMLInputElement>(`input[name="${assessmentKey}"]:checked`);
-                    data[assessmentKey] = checkedInput ? checkedInput.value : '';
-                }
-            });
-        });
-
-        // Get expansion loop details if checked
-        const expansionLoopCheckbox = document.getElementById('expansion-feature-expansion_loop') as HTMLInputElement;
-        if (expansionLoopCheckbox?.checked) {
-            const loops: ExpansionLoopData[] = [];
-            const loopEntries = document.querySelectorAll<HTMLFieldSetElement>('.expansion-loop-entry');
-            loopEntries.forEach((fieldset, index) => {
-                const leg1 = (document.getElementById(`expansion-loop-leg1-${index}`) as HTMLInputElement)?.value || '';
-                const leg2 = (document.getElementById(`expansion-loop-leg2-${index}`) as HTMLInputElement)?.value || '';
-                const leg3 = (document.getElementById(`expansion-loop-leg3-${index}`) as HTMLInputElement)?.value || '';
-                const sourceRadio = form.querySelector<HTMLInputElement>(`input[name="expansion-loop-dimension-source-${index}"]:checked`);
-                const source = sourceRadio ? sourceRadio.value : '';
-                loops.push({ leg1, leg2, leg3, source });
-            });
-            data.expansion_loops = loops;
-        }
-
-        return data;
-    }
-
-    function handleDocChange() {
-        const docSelect = document.getElementById('doc-select') as HTMLSelectElement;
-        const systemSelect = document.getElementById('system-select') as HTMLSelectElement;
-        const systemContainer = document.getElementById('system-select-container') as HTMLElement;
-        const maopInput = document.getElementById('maop') as HTMLInputElement;
-        const selectedDoc = docSelect.value as keyof typeof systemData;
-
-        const options = systemData[selectedDoc] || [];
-
-        // Clear previous options
-        systemSelect.innerHTML = '';
-
-        // Populate new options
-        options.forEach(opt => {
-            const option = document.createElement('option');
-            option.value = opt.value;
-            option.textContent = opt.text;
-            if (opt.value === '') {
-                option.disabled = true;
-                option.selected = true;
-            }
-            systemSelect.appendChild(option);
-        });
-
-        // Show or hide the container
-        if (options.length > 0) {
-            systemContainer.style.display = 'block';
-        } else {
-            systemContainer.style.display = 'none';
-        }
-
-        // Reset MAOP
-        maopInput.value = '';
-    }
-
-    function handleSystemChange(event: Event) {
-        const select = event.target as HTMLSelectElement;
-        const selectedValue = select.value;
-        const maopInput = document.getElementById('maop') as HTMLInputElement;
-
-        if (selectedValue && selectedValue.includes('|')) {
-            const [, maop] = selectedValue.split('|');
-            maopInput.value = maop;
-        } else {
-            maopInput.value = '';
-        }
-    }
-
-    function handlePipeMaterialChange() {
-        const materialSelect = document.getElementById('pipe-material') as HTMLSelectElement;
-        if (!materialSelect) return;
-        const materialValue = materialSelect.value;
-
-        const steelGradeContainer = document.getElementById('pipe-grade-container');
-        const plasticGradeContainer = document.getElementById('plastic-pipe-grade-container');
-        const sdrContainer = document.getElementById('pipe-sdr-container');
-
-        const steelGradeInput = document.getElementById('pipe-grade') as HTMLSelectElement;
-        const plasticGradeInput = document.getElementById('plastic-pipe-grade') as HTMLSelectElement;
-        const sdrInput = document.getElementById('pipe-sdr') as HTMLInputElement;
-        
-        // Hide all conditional fields by default
-        if (steelGradeContainer) steelGradeContainer.style.display = 'none';
-        if (plasticGradeContainer) plasticGradeContainer.style.display = 'none';
-        if (sdrContainer) sdrContainer.style.display = 'none';
-
-        if (materialValue === 'steel' || materialValue === 'steel_in_casing') {
-            if (steelGradeContainer) steelGradeContainer.style.display = 'block';
-            // Clear plastic fields
-            if (plasticGradeInput) plasticGradeInput.value = '';
-            if (sdrInput) sdrInput.value = '';
-        } else if (materialValue === 'plastic' || materialValue === 'plastic_in_casing') {
-            if (plasticGradeContainer) plasticGradeContainer.style.display = 'block';
-            if (sdrContainer) sdrContainer.style.display = 'block';
-            // Clear steel field
-            if (steelGradeInput) steelGradeInput.value = '';
-        } else {
-            // For 'Other' or no selection, clear all conditional fields
-            if (steelGradeInput) steelGradeInput.value = '';
-            if (plasticGradeInput) plasticGradeInput.value = '';
-            if (sdrInput) sdrInput.value = '';
-        }
-    }
-
-    function populateFormWithData(data: { [key: string]: any }) {
-        // First, handle the DOC and dependent system select
-        if (data['doc-select']) {
-            const docSelect = document.getElementById('doc-select') as HTMLSelectElement;
-            docSelect.value = data['doc-select'];
-            handleDocChange(); // This populates the system-select options
-        }
-
-        Object.keys(data).forEach(key => {
-            if (key === 'fileData' || key === 'expansion_loops') {
-                // Handled separately below
-                return;
-            }
-            
-            const element = document.getElementById(key) as HTMLInputElement | HTMLSelectElement | HTMLTextAreaElement;
-            if (element) {
-                if ((element as HTMLInputElement).type === 'radio') {
-                    // Handled by name below
-                } else if ((element as HTMLInputElement).type === 'checkbox') {
-                    // Handled by name below
-                } else {
-                    element.value = data[key];
-                     if (element.tagName === 'TEXTAREA') {
-                       setTimeout(() => autoResizeTextarea(element as HTMLTextAreaElement), 0);
-                    }
-                }
-            }
-            
-            // Handle radio and checkbox groups by name
-            const elementsByName = document.getElementsByName(key);
-            if (elementsByName.length > 0) {
-                const firstEl = elementsByName[0] as HTMLInputElement;
-                if (firstEl.type === 'radio') {
-                    for (const el of Array.from(elementsByName) as HTMLInputElement[]) {
-                        if (el.value === data[key]) {
-                            el.checked = true;
-                            break;
-                        }
-                    }
-                } else if (firstEl.type === 'checkbox') {
-                    if (key === 'expansion-feature' && typeof data[key] === 'object' && !Array.isArray(data[key]) && data[key] !== null) {
-                        const featureData = data[key] as { [key: string]: number };
-                        Object.entries(featureData).forEach(([featureValue, quantity]) => {
-                            const checkboxId = `${key}-${featureValue.toLowerCase().replace(/\s+/g, '-')}`;
-                            const checkbox = document.getElementById(checkboxId) as HTMLInputElement;
-                            if (checkbox) {
-                                checkbox.checked = true;
-                                
-                                // Manually trigger change to show containers
-                                checkbox.dispatchEvent(new Event('change'));
-
-                                if (featureValue !== 'expansion_loop') {
-                                    const quantityInput = document.getElementById(`${checkboxId}-quantity`) as HTMLInputElement;
-                                    if (quantityInput) {
-                                        quantityInput.value = String(quantity);
-                                        quantityInput.style.display = 'inline-block';
-                                    }
-                                }
-                            }
-                        });
-                    } else { // Fallback for old array format
-                        const values = Array.isArray(data[key]) ? data[key] : [];
-                        for (const el of Array.from(elementsByName) as HTMLInputElement[]) {
-                           el.checked = values.includes(el.value);
-                        }
-                    }
-                }
-            }
-        });
-        
-        // Populate file data
-        if (data.fileData) {
-            // Clear existing file data before loading new
-            Object.keys(fileDataStore).forEach(key => delete fileDataStore[key]);
-
-            const loadedFileData = data.fileData;
-            Object.keys(loadedFileData).forEach(inputId => {
-                fileDataStore[inputId] = loadedFileData[inputId];
-                renderFileList(inputId);
-            });
-        }
-        
-        // Populate expansion loops
-        if (data.expansion_loops && Array.isArray(data.expansion_loops)) {
-            const addLoopButton = document.getElementById('add-expansion-loop-button');
-            if (addLoopButton) {
-                data.expansion_loops.forEach((loopData: ExpansionLoopData, index: number) => {
-                    addLoopButton.click(); // Creates a new fieldset
-                    (document.getElementById(`expansion-loop-leg1-${index}`) as HTMLInputElement).value = loopData.leg1;
-                    (document.getElementById(`expansion-loop-leg2-${index}`) as HTMLInputElement).value = loopData.leg2;
-                    (document.getElementById(`expansion-loop-leg3-${index}`) as HTMLInputElement).value = loopData.leg3;
-                    if (loopData.source) {
-                        const sourceRadio = document.querySelector(`input[name="expansion-loop-dimension-source-${index}"][value="${loopData.source}"]`) as HTMLInputElement;
-                        if (sourceRadio) sourceRadio.checked = true;
-                    }
-                });
-            }
-        }
-
-
-        // Trigger the system change to set MAOP if a system is selected
-        const systemSelect = document.getElementById('system-select') as HTMLSelectElement;
-        if (systemSelect.value) {
-            handleSystemChange({ target: systemSelect } as unknown as Event);
-        }
-
-        // Trigger pipe material change to show/hide relevant fields
-        handlePipeMaterialChange();
-    }
-
-    function handleExampleAssessment() {
-        const exampleData = {
-            "date-of-assessment": new Date().toISOString().split('T')[0],
-            "assessment-by": "Jane Doe, P.Eng.",
-            "doc-select": "nu-nh",
-            "crossing-id": "BR-451",
-            "town-city": "Hampton, NH",
-            "crossing-description": "Pipeline is a 6-inch steel main attached to the west fascia of the Main Street Bridge, spanning the Hampton River. Access is available from the public right-of-way at the north abutment.",
-            "gps-lat": "42.9372° N",
-            "gps-lon": "70.8145° W",
-            "road-name": "Main Street",
-            "feature-crossed": "Hampton River",
-            "bridge-name": "Hampton River Bridge",
-            "bridge-number": "HMP-034-056",
-            "bridge-type": "girder",
-            "bridge-material": "steel",
-            "ambient-temp": "68",
-            "weather-conditions": "Clear and sunny with a light breeze from the southwest.",
-            "vegetation-growth": "Minor grass and weeds observed around the north abutment. No vegetation is in direct contact with the pipeline or its supports.",
-            "scour-erosion": "No significant scour or erosion was noted at the base of the piers or abutments. The riverbank appears stable.",
-            "proximity-water": "The pipeline is approximately 15 feet above the normal high water mark. The crossing is subject to tidal influence.",
-            "debris-accumulation": "A small amount of driftwood was observed on the upstream side of Pier 2, but it does not pose a risk to the pipeline supports.",
-            "system-select": "Exeter-Hampton|171 PSIG",
-            "maop": "171 PSIG",
-            "pipe-diameter": "6",
-            "wall-thickness": "0.280",
-            "wall-thickness-assessment": "Stamped on Pipe",
-            "wall-thickness-comments": "Wall thickness confirmed from adjacent pipe segment stamp during a 2018 replacement project.",
-            "pipe-material": "steel",
-            "pipe-grade": "x42",
-            "pipe-grade-assessment": "From records",
-            "installation-temp": "60",
-            "installation-temp-assessment": "Assumed",
-            "abutment-a-location": "north",
-            "abutment-b-location": "south",
-            "support-method": "rollers",
-            "primary-support-count": "8",
-            "primary-support-dist-left": "25",
-            "primary-support-dist-left-assessment": "Measured",
-            "primary-support-dist-right": "25",
-            "primary-support-dist-right-assessment": "Measured",
-            "secondary-support-method": "hangers",
-            "secondary-support-count": "4",
-            "secondary-support-dist-left": "12.5",
-            "secondary-support-dist-left-assessment": "Estimated",
-            "secondary-support-dist-right": "12.5",
-            "secondary-support-dist-right-assessment": "Estimated",
-            "tertiary-support-method": "",
-            "other-support-specify": "",
-            "support-condition-thermal-stress-comments": "No signs of significant thermal stress. Supports appear to be accommodating movement adequately.",
-            "pipe-movement-at-supports-comments": "Pipe is free to move at all roller supports. No signs of binding were observed.",
-            "sliding-roller-functionality-comments": "Roller support R-5 (at Pier 2) appears stiff and is not rolling freely. Evidence of minor corrosion on the roller axle. All other rollers are functional.",
-            "support-comments": "All support attachments (bolts, welds) appear secure. Minor surface corrosion is present on some hanger rods but does not appear to affect structural integrity at this time.",
-            "expansion-feature": {"pipe_flexibility": 1},
-            "other-expansion-specify": "",
-            "expansion-feature-functionality-comments": "The pipeline has sufficient offsets at both abutments to accommodate thermal expansion and contraction.",
-            "expansion-comments": "The designed flexibility appears adequate for the observed temperature ranges and span length.",
-            "coating-type": "fusion-bonded-epoxy",
-            "other-coating-type-specify": "",
-            "coating-comments": "Coating is in generally good condition. A small area of mechanical damage (approx. 2\" x 1\") was noted on the top of the pipe, mid-span between supports R-3 and R-4. The scratch penetrates to bare metal.",
-            "pipe-physical-damage": "No dents or gouges were observed. The only physical damage is the coating scratch noted in the previous section.",
-            "atmospheric-corrosion-details": "Light surface corrosion is present on the bare metal exposed by the coating scratch. No pitting is visible.",
-            "clearance-group-v-hwy-value": "16", "clearance-group-v-hwy-units": "ft",
-            "clearance-group-v-water-value": "15", "clearance-group-v-water-units": "ft",
-            "clearance-comments": "All clearances meet or exceed minimum requirements.",
-            "safety-hazards": "Work requires traffic control on Main Street. Fall protection is required for any work over the side of the bridge.",
-            "access-structures-condition": "No dedicated access structures are present.",
-            "access-safety-comments": "Access is straightforward but requires coordination with local authorities for traffic management.",
-            "other-utilities-bridge": "A fiber optic conduit is attached to the east fascia of the bridge, approximately 10 feet from the gas main.",
-            "bridge-structure-condition": "The bridge structure appears to be in fair condition, with minor concrete spalling on the deck underside. This does not impact the pipeline supports.",
-            "third-party-damage-potential": "Low potential for third-party damage due to the pipeline's position on the bridge fascia, away from the roadway.",
-            "third-party-comments": "No immediate concerns regarding third-party infrastructure.",
-            "immediate-hazards": "None.",
-            "actions-taken-hazards": "N/A",
-            "recommendation-priority": "medium",
-            "recommendations-summary": "1. Schedule maintenance to clean and lubricate roller support R-5.\n2. Clean the area of coating damage, inspect the pipe surface for corrosion, and apply a compatible field coating repair system.",
-            "final-summary-evaluation": "The 6-inch steel pipeline at the BR-451 crossing is in overall good condition and is fit for continued service. The support system is structurally sound, though one roller support requires maintenance to ensure proper functionality. A minor coating breach was identified and requires repair to prevent the onset of atmospheric corrosion. The recommendations outlined should be addressed within the next six months to maintain the asset's integrity."
-        };
-        populateFormWithData(exampleData);
-        alert("Example assessment data has been loaded.");
-    }
-    
     function populateForm() {
         formSections.forEach(sectionData => {
             const sectionEl = document.createElement('div');
@@ -1728,6 +1486,90 @@ document.addEventListener('DOMContentLoaded', () => {
         }
     }
     
+    function handleDocChange() {
+        const docSelect = document.getElementById('doc-select') as HTMLSelectElement;
+        const systemSelect = document.getElementById('system-select') as HTMLSelectElement;
+        const systemContainer = document.getElementById('system-select-container') as HTMLElement;
+        const maopInput = document.getElementById('maop') as HTMLInputElement;
+        const selectedDoc = docSelect.value as keyof typeof systemData;
+    
+        const options = systemData[selectedDoc] || [];
+    
+        // Clear previous options
+        systemSelect.innerHTML = '';
+    
+        // Populate new options
+        options.forEach(opt => {
+            const option = document.createElement('option');
+            option.value = opt.value;
+            option.textContent = opt.text;
+            if (opt.value === '') {
+                option.disabled = true;
+                option.selected = true;
+            }
+            systemSelect.appendChild(option);
+        });
+    
+        // Show or hide the container
+        if (options.length > 0) {
+            systemContainer.style.display = 'block';
+        } else {
+            systemContainer.style.display = 'none';
+        }
+    
+        // Reset MAOP
+        maopInput.value = '';
+    }
+
+    function handleSystemChange(event: Event) {
+        const select = event.target as HTMLSelectElement;
+        const selectedValue = select.value;
+        const maopInput = document.getElementById('maop') as HTMLInputElement;
+
+        if (selectedValue && selectedValue.includes('|')) {
+            const [, maop] = selectedValue.split('|');
+            maopInput.value = maop;
+        } else {
+            maopInput.value = '';
+        }
+    }
+
+    function handlePipeMaterialChange() {
+        const materialSelect = document.getElementById('pipe-material') as HTMLSelectElement;
+        if (!materialSelect) return;
+        const materialValue = materialSelect.value;
+
+        const steelGradeContainer = document.getElementById('pipe-grade-container');
+        const plasticGradeContainer = document.getElementById('plastic-pipe-grade-container');
+        const sdrContainer = document.getElementById('pipe-sdr-container');
+
+        const steelGradeInput = document.getElementById('pipe-grade') as HTMLSelectElement;
+        const plasticGradeInput = document.getElementById('plastic-pipe-grade') as HTMLSelectElement;
+        const sdrInput = document.getElementById('pipe-sdr') as HTMLInputElement;
+        
+        // Hide all conditional fields by default
+        if (steelGradeContainer) steelGradeContainer.style.display = 'none';
+        if (plasticGradeContainer) plasticGradeContainer.style.display = 'none';
+        if (sdrContainer) sdrContainer.style.display = 'none';
+
+        if (materialValue === 'steel' || materialValue === 'steel_in_casing') {
+            if (steelGradeContainer) steelGradeContainer.style.display = 'block';
+            // Clear plastic fields
+            if (plasticGradeInput) plasticGradeInput.value = '';
+            if (sdrInput) sdrInput.value = '';
+        } else if (materialValue === 'plastic' || materialValue === 'plastic_in_casing') {
+            if (plasticGradeContainer) plasticGradeContainer.style.display = 'block';
+            if (sdrContainer) sdrContainer.style.display = 'block';
+            // Clear steel field
+            if (steelGradeInput) steelGradeInput.value = '';
+        } else {
+            // For 'Other' or no selection, clear all conditional fields
+            if (steelGradeInput) steelGradeInput.value = '';
+            if (plasticGradeInput) plasticGradeInput.value = '';
+            if (sdrInput) sdrInput.value = '';
+        }
+    }
+
     function populateProcessGuidelines() {
         guidelinesContainer.innerHTML = `
             <h2>Process Guidelines for Pipeline Bridge Crossing Assessment</h2>
@@ -1774,6 +1616,7 @@ document.addEventListener('DOMContentLoaded', () => {
             <p>This section details the physical and operational parameters of the pipeline itself.</p>
             <ul>
                 <li><strong>System Name & MAOP:</strong> After selecting a DOC, choose the correct system. The MAOP (Maximum Allowable Operating Pressure) will auto-populate.</li>
+                <li><strong>Pipe Length (ft):</strong> Enter the total length of the pipeline associated with the crossing in feet. Select the source for this information (e.g., Measured, Estimated, from records).</li>
                 <li><strong>Pipe Diameter:</strong> Select the nominal pipe diameter in inches.</li>
                 <li><strong>Wall Thickness (inches):</strong> Enter the pipe wall thickness. Crucially, select the source of this information (e.g., Measured, from records, Assumed).</li>
                 <li><strong>Comments on Wall Thickness:</strong> Use this field to add context, e.g., "Thickness measured with UT gauge at north end" or "Assumed based on standard for this vintage."</li>
@@ -1904,7 +1747,114 @@ document.addEventListener('DOMContentLoaded', () => {
         openFileInput.value = "";
     }
     
-    function generateTextSummaryForAI(formData: { [key: string]: any }, sectionsToSummarize?: FormSectionData[]): string {
+    function populateFormWithData(data: { [key: string]: any }) {
+        // First, handle the DOC and dependent system select
+        if (data['doc-select']) {
+            const docSelect = document.getElementById('doc-select') as HTMLSelectElement;
+            docSelect.value = data['doc-select'];
+            handleDocChange(); // This populates the system-select options
+        }
+
+        Object.keys(data).forEach(key => {
+            if (key === 'fileData' || key === 'expansion_loops') {
+                // Handled separately below
+                return;
+            }
+            
+            const element = document.getElementById(key) as HTMLInputElement | HTMLSelectElement | HTMLTextAreaElement;
+            if (element) {
+                if ((element as HTMLInputElement).type === 'radio') {
+                    // Handled by name below
+                } else if ((element as HTMLInputElement).type === 'checkbox') {
+                    // Handled by name below
+                } else {
+                    element.value = data[key];
+                     if (element.tagName === 'TEXTAREA') {
+                       setTimeout(() => autoResizeTextarea(element as HTMLTextAreaElement), 0);
+                    }
+                }
+            }
+            
+            // Handle radio and checkbox groups by name
+            const elementsByName = document.getElementsByName(key);
+            if (elementsByName.length > 0) {
+                const firstEl = elementsByName[0] as HTMLInputElement;
+                if (firstEl.type === 'radio') {
+                    for (const el of Array.from(elementsByName) as HTMLInputElement[]) {
+                        if (el.value === data[key]) {
+                            el.checked = true;
+                            break;
+                        }
+                    }
+                } else if (firstEl.type === 'checkbox') {
+                    if (key === 'expansion-feature' && typeof data[key] === 'object' && !Array.isArray(data[key]) && data[key] !== null) {
+                        const featureData = data[key] as { [key: string]: number };
+                        Object.entries(featureData).forEach(([featureValue, quantity]) => {
+                            const checkboxId = `${key}-${featureValue.toLowerCase().replace(/\s+/g, '-')}`;
+                            const checkbox = document.getElementById(checkboxId) as HTMLInputElement;
+                            if (checkbox) {
+                                checkbox.checked = true;
+                                
+                                // Manually trigger change to show containers
+                                checkbox.dispatchEvent(new Event('change'));
+
+                                if (featureValue !== 'expansion_loop') {
+                                    const quantityInput = document.getElementById(`${checkboxId}-quantity`) as HTMLInputElement;
+                                    if (quantityInput) {
+                                        quantityInput.value = String(quantity);
+                                        quantityInput.style.display = 'inline-block';
+                                    }
+                                }
+                            }
+                        });
+                    } else { // Fallback for old array format
+                        const values = Array.isArray(data[key]) ? data[key] : [];
+                        for (const el of Array.from(elementsByName) as HTMLInputElement[]) {
+                           el.checked = values.includes(el.value);
+                        }
+                    }
+                }
+            }
+        });
+        
+        // Populate file data
+        if (data.fileData) {
+            const loadedFileData = data.fileData;
+            Object.keys(loadedFileData).forEach(inputId => {
+                fileDataStore[inputId] = loadedFileData[inputId];
+                renderFileList(inputId);
+            });
+        }
+        
+        // Populate expansion loops
+        if (data.expansion_loops && Array.isArray(data.expansion_loops)) {
+            const addLoopButton = document.getElementById('add-expansion-loop-button');
+            if (addLoopButton) {
+                data.expansion_loops.forEach((loopData: ExpansionLoopData, index: number) => {
+                    addLoopButton.click(); // Creates a new fieldset
+                    (document.getElementById(`expansion-loop-leg1-${index}`) as HTMLInputElement).value = loopData.leg1;
+                    (document.getElementById(`expansion-loop-leg2-${index}`) as HTMLInputElement).value = loopData.leg2;
+                    (document.getElementById(`expansion-loop-leg3-${index}`) as HTMLInputElement).value = loopData.leg3;
+                    if (loopData.source) {
+                        const sourceRadio = document.querySelector(`input[name="expansion-loop-dimension-source-${index}"][value="${loopData.source}"]`) as HTMLInputElement;
+                        if (sourceRadio) sourceRadio.checked = true;
+                    }
+                });
+            }
+        }
+
+
+        // Trigger the system change to set MAOP if a system is selected
+        const systemSelect = document.getElementById('system-select') as HTMLSelectElement;
+        if (systemSelect.value) {
+            handleSystemChange({ target: systemSelect } as unknown as Event);
+        }
+
+        // Trigger pipe material change to show/hide relevant fields
+        handlePipeMaterialChange();
+    }
+    
+    function generateTextSummary(formData: { [key: string]: any }, sectionsToSummarize?: FormSectionData[]): string {
         let summary = "Assessment Data Summary:\n";
         const sections = sectionsToSummarize || formSections;
 
@@ -1913,14 +1863,6 @@ document.addEventListener('DOMContentLoaded', () => {
             let sectionSummary = '';
             section.fields.forEach(field => {
                  if (field.type === 'file') return;
-
-                // Skip conditional fields that are not visible
-                if (field.containerId) {
-                    const container = document.getElementById(field.containerId);
-                    if (container && container.style.display === 'none') {
-                        return;
-                    }
-                }
                 
                 const rawValue = formData[field.id];
                 let displayValue: string | null = null;
@@ -2031,47 +1973,48 @@ document.addEventListener('DOMContentLoaded', () => {
         let finalSummary = "Final Summary requires admin features to be unlocked.";
 
         if (document.body.classList.contains('voice-enabled')) {
-            const apiKey = GEMINI_API_KEY;
-            const isApiKeyInvalid = !apiKey || apiKey.trim() === '' || apiKey.startsWith("%%") || apiKey === 'null' || apiKey === 'undefined';
+            loadingText.textContent = "Generating...";
+            loadingOverlay.style.display = 'flex';
 
-            if (isApiKeyInvalid) {
-                alert("Admin feature error: The API key has not been configured in the deployment environment. The report can be generated, but without AI-powered summaries.");
-                execSummary = "AI Summary unavailable: API Key not configured in environment.";
-                finalSummary = "AI Summary unavailable: API Key not configured in environment.";
-            } else {
-                loadingText.textContent = "Generating Summaries...";
-                loadingOverlay.style.display = 'flex';
-                
-                try {
-                    const fullTextSummary = generateTextSummaryForAI(formData);
+            const fullTextSummary = generateTextSummary(formData);
 
-                    // --- AI Generation ---
-                    const ai = new GoogleGenAI({ apiKey: apiKey });
-
-                    const execSummaryPrompt = `Based on the following pipeline bridge crossing assessment data, write a detailed and comprehensive professional Executive Summary for an engineering report. Structure the summary with clear paragraphs and use formal, professional language. This summary should be thorough, elaborating on the overall condition, all findings from minor to high-priority, and the specific recommendations made. Ensure the summary is extensive enough to provide a full overview without being overly brief. Data:\n${fullTextSummary}`;
-                    const finalSummaryPrompt = `Based on the following pipeline bridge crossing assessment data, write a comprehensive "Final Summary of Evaluation". This should synthesize all key findings from the report into one or more detailed concluding paragraphs. Use formal, professional language and structure the response into well-formed paragraphs. Data:\n${fullTextSummary}`;
-                    
-                    const promises = [
-                        ai.models.generateContent({ model: 'gemini-2.5-flash-preview-04-17', contents: execSummaryPrompt }),
-                        ai.models.generateContent({ model: 'gemini-2.5-flash-preview-04-17', contents: finalSummaryPrompt }),
-                    ];
-
-                    const [execResult, finalResult] = await Promise.allSettled(promises);
-
-                    execSummary = (execResult.status === 'fulfilled') 
-                        ? execResult.value.text 
-                        : `Warning: Could not connect to the AI service to generate summary. Please check the console for details.`;
+            // --- Summary Generation ---
+            const ai = new GoogleGenAI({ apiKey: process.env.API_KEY });
             
-                    finalSummary = (finalResult.status === 'fulfilled') 
-                        ? finalResult.value.text 
-                        : `Warning: Could not connect to the AI service to generate summary. Please check the console for details.`;
-                } catch (error) {
-                     console.error("Error generating report summaries:", error);
-                     execSummary = "Error: Failed to generate executive summary.";
-                     finalSummary = "Error: Failed to generate final summary.";
-                } finally {
-                    loadingOverlay.style.display = 'none';
-                }
+            const codesToInclude = applicableCodes.filter(code => code.condition(formData));
+            let applicableCodesText = "";
+            if (codesToInclude.length > 0) {
+                applicableCodesText += "\n\n--- Applicable Codes for Reference ---\n";
+                applicableCodesText += "When generating the text, you MUST integrate and reference the following applicable codes where relevant to the findings. Explain how the findings relate to the principles in these codes. Do not just list the codes; weave them into the narrative naturally.\n\n";
+                codesToInclude.forEach(code => {
+                    applicableCodesText += `Citation: ${code.citation} (${code.title})\nText: "${code.text}"\n\n`;
+                });
+            }
+
+            const execSummaryPrompt = `Based on the following pipeline bridge crossing assessment data, write a detailed and comprehensive professional Executive Summary for an engineering report. Structure the summary with clear paragraphs that flow nicely, using formal, professional language. This summary should be thorough, elaborating on the overall condition, all findings from minor to high-priority, and the specific recommendations made. Where applicable, you must reference relevant industry standards provided below. Ensure the summary is extensive enough to provide a full overview without being overly brief. Do not repeat the input data in your response. Data:\n${fullTextSummary}${applicableCodesText}`;
+            const finalSummaryPrompt = `Based on the following pipeline bridge crossing assessment data, write a comprehensive "Final Summary of Evaluation". This should synthesize all key findings from the report into one or more detailed concluding paragraphs. Use formal, professional language and structure the response into well-formed paragraphs. If findings relate to the provided codes, integrate them into your summary. Do not repeat the input data in your response. Data:\n${fullTextSummary}${applicableCodesText}`;
+            
+            try {
+                const promises = [
+                    ai.models.generateContent({ model: 'gemini-2.5-flash-preview-04-17', contents: execSummaryPrompt }),
+                    ai.models.generateContent({ model: 'gemini-2.5-flash-preview-04-17', contents: finalSummaryPrompt }),
+                ];
+
+                const [execResult, finalResult] = await Promise.allSettled(promises);
+
+                execSummary = (execResult.status === 'fulfilled') 
+                    ? execResult.value.text.replace(/[*#]/g, '')
+                    : `Warning: Could not connect to the generation service to generate summary. Please check the console for details.`;
+        
+                finalSummary = (finalResult.status === 'fulfilled') 
+                    ? finalResult.value.text.replace(/[*#]/g, '')
+                    : `Warning: Could not connect to the generation service to generate summary. Please check the console for details.`;
+            } catch (error) {
+                 console.error("Error generating report summaries:", error);
+                 execSummary = "Error: Failed to generate executive summary.";
+                 finalSummary = "Error: Failed to generate final summary.";
+            } finally {
+                loadingOverlay.style.display = 'none';
             }
         }
 
@@ -2086,14 +2029,8 @@ document.addEventListener('DOMContentLoaded', () => {
         
         // Add improve buttons if admin
         if (document.body.classList.contains('voice-enabled')) {
-            const execWrapper = document.getElementById('modal-exec-summary-wrapper')!;
-            const finalWrapper = document.getElementById('modal-final-summary-wrapper')!;
-            // Clear old buttons before adding new ones
-            if (execWrapper.querySelector('.improve-button')) execWrapper.querySelector('.improve-button')?.remove();
-            if (finalWrapper.querySelector('.improve-button')) finalWrapper.querySelector('.improve-button')?.remove();
-            
-            addImproveButton(execWrapper, execSummaryTextarea);
-            addImproveButton(finalWrapper, finalSummaryTextarea);
+            addImproveButton(document.getElementById('modal-exec-summary-wrapper')!, execSummaryTextarea);
+            addImproveButton(document.getElementById('modal-final-summary-wrapper')!, finalSummaryTextarea);
         }
 
         const modalGeneratePdfButton = document.getElementById('modal-generate-pdf-button')!;
@@ -2136,14 +2073,12 @@ document.addEventListener('DOMContentLoaded', () => {
     
         try {
             const { jsPDF } = window.jspdf;
-            const doc = new jsPDF({ orientation: 'p', unit: 'mm', format: 'a4' });
+            const doc = new jsPDF();
     
             const pageWidth = doc.internal.pageSize.getWidth();
             const pageHeight = doc.internal.pageSize.getHeight();
             const margin = 15;
             
-            // Overwrite form data with final, edited summaries
-            formData['recommendations-summary'] = formData['recommendations-summary']; // Keep original recommendations
             formData['final-summary-evaluation'] = finalSummary;
     
             // --- Helper for header/footer ---
@@ -2151,8 +2086,11 @@ document.addEventListener('DOMContentLoaded', () => {
                 const pageCount = doc.internal.getNumberOfPages();
                 for (let i = 1; i <= pageCount; i++) {
                     doc.setPage(i);
-                    // No header/footer on title page 
-                    if (i === 1) continue;
+                    // No header/footer on title page or any direct continuations of it
+                    const isTitlePage = i === 1; 
+                    // This logic is imperfect for multi-page summaries, but for now, we'll keep it simple
+                    // and skip the first page. A more robust way would track summary pages.
+                    if (isTitlePage) continue;
                     
                     doc.setFont('helvetica', 'normal');
                     doc.setFontSize(9);
@@ -2192,237 +2130,542 @@ document.addEventListener('DOMContentLoaded', () => {
             doc.setFontSize(11);
             doc.setFont('helvetica', 'normal');
             const summaryLines = doc.splitTextToSize(execSummary, pageWidth - margin * 2);
-            const lineHeight = doc.getLineHeight() * 0.5;
+            // Calculate line height for true single spacing based on current font size.
+            const summaryLineHeight = doc.getFontSize() / doc.internal.scaleFactor;
 
             for (const line of summaryLines) {
-                if (cursorY + lineHeight > pageHeight - margin) {
+                // Check if adding the next line would overflow the page
+                if (cursorY + summaryLineHeight > pageHeight - margin) {
                     doc.addPage();
-                    cursorY = margin;
+                    cursorY = margin; // Reset cursor to top margin
+
+                    // Add a continuation header on the new page
+                    doc.setFontSize(16);
+                    doc.setFont('helvetica', 'bold');
+                    doc.text('Executive Summary (Continued)', margin, cursorY);
+                    cursorY += 12; // Extra space after header
+                    
+                    doc.setFontSize(11);
+                    doc.setFont('helvetica', 'normal');
                 }
                 doc.text(line, margin, cursorY);
-                cursorY += lineHeight;
+                cursorY += summaryLineHeight;
             }
-
+    
             // =================================================================
-            // TOC & DETAILED DATA
+            // PASS 1: DRAW TABLE OF CONTENTS LAYOUT (without page numbers)
             // =================================================================
             doc.addPage();
-            const tocPageNumber = doc.internal.getNumberOfPages();
+            let tocPageNumber = doc.internal.getCurrentPageInfo().pageNumber;
+            let tocY = margin;
             const tocEntries: TocEntry[] = [];
-            cursorY = margin;
-
+            
             doc.setFontSize(16);
             doc.setFont('helvetica', 'bold');
-            doc.text('Table of Contents', margin, cursorY);
-            cursorY += 15;
-            const tocYPosition = cursorY;
+            doc.text('Table of Contents', margin, tocY);
+            tocY += 15;
+    
+            const allTocItems: { uniqueId: string, title: string; level: 0 | 1 }[] = [];
+            formSections.forEach(section => {
+                allTocItems.push({ uniqueId: section.id, title: section.title, level: 0 });
+                section.fields.forEach(field => {
+                    if (field.type === 'file') {
+                        return;
+                    }
+                    if (field.type === 'clearance-group' && field.options) {
+                        field.options.forEach(opt => {
+                            allTocItems.push({ uniqueId: `${section.id}-${field.id}-${opt.value}`, title: opt.text, level: 1 });
+                        });
+                        return; // Done with this field, skip generic label addition
+                    }
+                    allTocItems.push({ uniqueId: `${section.id}-${field.id}`, title: field.label, level: 1 });
+                    if (field.assessmentOptions) {
+                        allTocItems.push({ uniqueId: `${section.id}-${field.id}-assessment`, title: `${field.label} (Source)`, level: 1 });
+                    }
+                });
+            });
+            
+            // Add Expansion Loops to ToC
+            if (formData.expansion_loops && formData.expansion_loops.length > 0) {
+                 allTocItems.push({ uniqueId: 'expansion_loops_section', title: 'Expansion Loop Details', level: 0 });
+                 formData.expansion_loops.forEach((loop: ExpansionLoopData, index: number) => {
+                     allTocItems.push({ uniqueId: `expansion_loop_${index}`, title: `Expansion Loop #${index + 1}`, level: 1 });
+                 });
+            }
 
-            const checkPageBreakForToc = (y: number) => {
-                if (y > pageHeight - margin) {
+            // Add Applicable Codes to ToC if needed
+            const codesToInclude = applicableCodes.filter(code => code.condition(formData));
+            if (codesToInclude.length > 0) {
+                allTocItems.push({ uniqueId: 'codes_and_standards_section', title: 'Applicable Codes and Standards', level: 0 });
+            }
+
+            const imageFiles = [...(fileDataStore['photographs'] || []), ...(fileDataStore['other-docs'] || [])]
+                .filter(file => file && (file.type === 'image/jpeg' || file.type === 'image/png'));
+            if (imageFiles.length > 0) {
+                allTocItems.push({ uniqueId: 'photographs', title: 'Photographs and Attachments', level: 0 });
+            }
+    
+            for (const item of allTocItems) {
+                const isSection = item.level === 0;
+                const requiredHeight = isSection ? 7 : 6;
+                
+                if (tocY + requiredHeight > pageHeight - margin) {
                     doc.addPage();
-                    return margin;
+                    tocPageNumber = doc.internal.getCurrentPageInfo().pageNumber;
+                    tocY = margin;
+                    doc.setFontSize(16);
+                    doc.setFont('helvetica', 'bold');
+                    doc.text('Table of Contents (Continued)', margin, tocY);
+                    tocY += 15;
                 }
-                return y;
-            };
-
-            // --- Generate Data Sections ---
-            formSections.forEach((section, sectionIndex) => {
-                doc.addPage();
-                const sectionPage = doc.internal.getNumberOfPages();
-                tocEntries.push({ uniqueId: `section_${section.id}`, title: `${sectionIndex + 1}. ${section.title}`, level: 0, tocPage: tocPageNumber, y: 0, contentPage: sectionPage });
                 
-                cursorY = margin;
-                doc.setFontSize(14);
-                doc.setFont('helvetica', 'bold');
-                doc.text(`${sectionIndex + 1}. ${section.title}`, margin, cursorY);
-                cursorY += 10;
+                doc.setTextColor(0, 0, 0);
+                doc.setFontSize(isSection ? 12 : 10);
+                doc.setFont('helvetica', isSection ? 'bold' : 'normal');
+    
+                const indent = isSection ? margin : margin + 5;
+                const title = item.title;
+                const pageNumPlaceholderWidth = doc.getTextWidth('999'); // Estimate width
+    
+                const leaderWidth = pageWidth - margin - pageNumPlaceholderWidth - 2;
+                doc.text(title, indent, tocY);
                 
-                const tableBody: (string | { content: string; colSpan: number; styles: any })[][] = [];
-                const textAreas: { label: string, value: string }[] = [];
+                let titleWidth = doc.getTextWidth(title);
+                let currentX = indent + titleWidth + 1;
+                const dotWidth = doc.getTextWidth('.');
+                while (currentX < leaderWidth) {
+                    doc.text('.', currentX, tocY);
+                    currentX += dotWidth;
+                }
+                
+                tocEntries.push({ uniqueId: item.uniqueId, title: item.title, level: item.level, tocPage: tocPageNumber, y: tocY });
+                tocY += requiredHeight;
+            }
+    
+            // =================================================================
+            // PASS 2: GENERATE CONTENT & GATHER PAGE NUMBERS
+            // =================================================================
+            doc.addPage();
+            
+            // Create a map for efficient lookups. Assumes uniqueIds are unique.
+            const tocMap = new Map<string, TocEntry>();
+            for (const entry of tocEntries) {
+                tocMap.set(entry.uniqueId, entry);
+            }
 
+            const reportData: (string | { content: string; styles?: any; colSpan?: number })[][] = [];
+            const reportDataIds: string[] = []; // Parallel array to hold unique IDs
+            
+            formSections.forEach(section => {
+                reportData.push([{ content: section.title, colSpan: 2, styles: { fontStyle: 'bold', fillColor: '#eef1f5', textColor: '#003366', halign: 'left' } }]);
+                reportDataIds.push(section.id);
+                
                 section.fields.forEach(field => {
                     if (field.type === 'file') return;
-                    if (field.containerId && document.getElementById(field.containerId)?.style.display === 'none') return;
+    
+                    if (field.type === 'clearance-group' && field.options) {
+                        field.options.forEach(opt => {
+                            const valueId = `${field.id}-${opt.value}-value`;
+                            const unitId = `${field.id}-${opt.value}-units`;
+                            const val = formData[valueId];
+                            const displayVal = val ? `${val} ${formData[unitId]}` : '';
+                            reportData.push([opt.text, displayVal]);
+                            reportDataIds.push(`${section.id}-${field.id}-${opt.value}`);
+                        });
+                        return; // Done with this field
+                    }
+    
+                    const value = formData[field.id];
+                    let displayValue: string | null = null;
+                    if (field.id === 'expansion-feature') {
+                        const featureData = value as { [key: string]: number };
+                        if (typeof featureData === 'object' && value !== null && Object.keys(featureData).length > 0) {
+                            displayValue = Object.entries(featureData).map(([val, count]) => {
+                                const optionText = field.checkboxOptions?.find(opt => opt.value === val)?.text || val;
+                                if (val !== 'expansion_loop' && count > 1) {
+                                    return `${optionText} (Qty: ${count})`;
+                                }
+                                return optionText;
+                            }).join(', ');
+                        }
+                    } else if (value !== undefined && value !== null && value !== '' && (!Array.isArray(value) || value.length > 0)) {
+                        const rawValueString = Array.isArray(value) ? value.join(', ') : String(value);
+                        if (field.type === 'select') {
+                            const options = (field.id === 'system-select') 
+                                ? systemData[formData['doc-select'] as keyof typeof systemData] || [] 
+                                : (field.id === 'support-method' || field.id === 'secondary-support-method' || field.id === 'tertiary-support-method')
+                                ? supportMethodOptions
+                                : (field.id === 'abutment-a-location' || field.id === 'abutment-b-location')
+                                ? directionOptions
+                                : field.options || [];
+                            const selectedOption = options.find(opt => opt.value === rawValueString);
+                            displayValue = selectedOption ? selectedOption.text : rawValueString.split('|')[0];
+                        } else {
+                            displayValue = rawValueString;
+                        }
+                    }
+                    reportData.push([field.label, displayValue ?? '']);
+                    reportDataIds.push(`${section.id}-${field.id}`);
                     
-                    if (field.type === 'textarea' && formData[field.id]) {
-                        textAreas.push({ label: field.label, value: formData[field.id] });
+                    if (field.assessmentOptions) {
+                        const assessmentValue = formData[`${field.id}-assessment`];
+                        reportData.push([`${field.label} (Source)`, assessmentValue || '']);
+                        reportDataIds.push(`${section.id}-${field.id}-assessment`);
+                    }
+                });
+            });
+
+            // Add Expansion Loop details to the PDF table data
+            if (formData.expansion_loops && formData.expansion_loops.length > 0) {
+                reportData.push([{ content: 'Expansion Loop Details', colSpan: 2, styles: { fontStyle: 'bold', fillColor: '#eef1f5', textColor: '#003366' } }]);
+                reportDataIds.push('expansion_loops_section');
+    
+                formData.expansion_loops.forEach((loop: ExpansionLoopData, index: number) => {
+                    const loopHeader = `Expansion Loop #${index + 1}`;
+                    reportData.push([{ content: loopHeader, colSpan: 2, styles: { fontStyle: 'bold', fillColor: '#f8f9fa' } }]);
+                    reportDataIds.push(`expansion_loop_${index}`);
+    
+                    reportData.push(['Leg 1 Dimension (ft)', loop.leg1]);
+                    reportDataIds.push(''); // No ToC entry for these sub-items
+                    reportData.push(['Leg 2 Dimension (ft)', loop.leg2]);
+                    reportDataIds.push('');
+                    reportData.push(['Leg 3 Dimension (ft)', loop.leg3]);
+                    reportDataIds.push('');
+                    reportData.push(['Dimension Source', loop.source]);
+                    reportDataIds.push('');
+                });
+            }
+    
+            (doc as any).autoTable({
+                startY: margin,
+                head: [['Field', 'Value']],
+                body: reportData,
+                theme: 'grid',
+                headStyles: { fillColor: [0, 90, 156] },
+                didDrawCell: (data: any) => {
+                    // Process once per row using the first column for efficiency.
+                    if (data.column.index > 0) {
                         return;
                     }
                     
-                    let displayValue = generateTextSummaryForAI({ [field.id]: formData[field.id] }, [section]).split(':\n')[1]?.trim() || '';
-                    if (!displayValue) displayValue = generateTextSummaryForAI(formData, [section]).split(`${field.label}`)[1]?.split('\n')[0]?.replace(':','')?.trim() || '';
+                    const rowIndex = data.row.index;
+                    const uniqueId = reportDataIds[rowIndex];
 
-                    if(displayValue) tableBody.push([field.label, displayValue]);
-
-                    const assessmentKey = `${field.id}-assessment`;
-                    if (field.assessmentOptions && formData[assessmentKey]) {
-                         tableBody.push([`${field.label} (Source)`, formData[assessmentKey]]);
+                    if (uniqueId) {
+                        const entry = tocMap.get(uniqueId);
+                        // Set page number only if it hasn't been set yet.
+                        // This handles rows that might span pages correctly.
+                        if (entry && entry.contentPage === undefined) {
+                            // FIX: Get the page number directly from the jsPDF instance,
+                            // as data.pageNumber from the plugin can be unreliable.
+                            entry.contentPage = doc.internal.getCurrentPageInfo().pageNumber;
+                        }
                     }
-                });
-
-                if (tableBody.length > 0) {
-                     (doc as any).autoTable({
-                        startY: cursorY,
-                        head: [['Field', 'Information']],
-                        body: tableBody,
-                        theme: 'grid',
-                        headStyles: { fillColor: [0, 90, 156] },
-                        styles: { cellPadding: 2, fontSize: 10, overflow: 'linebreak' },
-                        columnStyles: { 0: { cellWidth: 60, fontStyle: 'bold' } },
-                        didDrawPage: (data: any) => { cursorY = data.cursor.y; }
-                    });
-                }
-                
-                if (textAreas.length > 0) {
-                    textAreas.forEach(area => {
-                        cursorY += 5;
-                        cursorY = checkPageBreakForToc(cursorY);
-                        doc.setFontSize(11);
-                        doc.setFont('helvetica', 'bold');
-                        doc.text(area.label, margin, cursorY);
-                        cursorY += 5;
-                        doc.setFont('helvetica', 'normal');
-                        const lines = doc.splitTextToSize(area.value, pageWidth - margin * 2);
-                        lines.forEach((line: string) => {
-                            cursorY = checkPageBreakForToc(cursorY);
-                            doc.text(line, margin, cursorY);
-                            cursorY += 5;
-                        });
-                    });
-                }
+                },
             });
             
-            // --- Attachments Page ---
-            const allFiles = Object.values(fileDataStore).flat();
-            if (allFiles.length > 0) {
+            // =================================================================
+            // APPLICABLE CODES AND STANDARDS
+            // =================================================================
+            if (codesToInclude.length > 0) {
                 doc.addPage();
-                tocEntries.push({ uniqueId: 'attachments', title: 'Attachments', level: 0, tocPage: tocPageNumber, y: 0, contentPage: doc.internal.getNumberOfPages() });
-                cursorY = margin;
-                doc.setFontSize(14);
-                doc.setFont('helvetica', 'bold');
-                doc.text('Attachments', margin, cursorY);
-                
-                for (const file of allFiles) {
-                    if (file.type.startsWith('image/')) {
-                        cursorY += 10;
-                        cursorY = checkPageBreakForToc(cursorY);
-
-                        const img = new Image();
-                        let loadSuccess = true;
-                        
-                        img.src = file.dataUrl;
-
-                        // Add error handling for image loading
-                        await new Promise(resolve => {
-                            img.onload = resolve;
-                            img.onerror = () => {
-                                console.error(`Failed to load image for PDF: ${file.name}`);
-                                loadSuccess = false;
-                                resolve(null); // Resolve to continue the process
-                            };
-                        });
-                        
-                        if (!loadSuccess) {
-                             doc.setFontSize(10);
-                             doc.setFont('helvetica', 'italic');
-                             doc.setTextColor(255, 0, 0); // Red color for error
-                             doc.text(`Could not load image: ${file.name}`, margin, cursorY);
-                             doc.setTextColor(0, 0, 0); // Reset color
-                             cursorY += 7;
-                             continue; // Skip to the next file
-                        }
-
-                        const maxWidth = pageWidth - margin * 2;
-                        let imgHeight = (img.height * maxWidth) / img.width;
-                        if (cursorY + imgHeight > pageHeight - margin) {
-                            doc.addPage();
-                            cursorY = margin;
-                        }
-
-                        doc.addImage(file.dataUrl, 'JPEG', margin, cursorY, maxWidth, imgHeight);
-                        cursorY += imgHeight + 5;
-                        
-                        doc.setFontSize(10);
-                        doc.setFont('helvetica', 'italic');
-                        doc.text(`${file.name}${file.comment ? `: ${file.comment}` : ''}`, pageWidth/2, cursorY, {align: 'center'});
-                    }
+                let codesY = margin;
+                const codesStartPage = doc.internal.getCurrentPageInfo().pageNumber;
+                const codesEntry = tocMap.get('codes_and_standards_section');
+                if (codesEntry) {
+                    codesEntry.contentPage = codesStartPage;
                 }
+
+                doc.setFontSize(16);
+                doc.setFont('helvetica', 'bold');
+                doc.text('Applicable Codes and Standards', margin, codesY);
+                codesY += 15;
+                
+                codesToInclude.forEach(code => {
+                    const titleText = `${code.citation}: ${code.title}`;
+                    
+                    // Use a temporary font setting to calculate height accurately
+                    doc.setFont('helvetica', 'bold');
+                    doc.setFontSize(12);
+                    const titleHeight = doc.getTextDimensions(titleText, { maxWidth: pageWidth - margin * 2 }).h;
+
+                    doc.setFont('helvetica', 'italic');
+                    doc.setFontSize(11);
+                    const bodyLines = doc.splitTextToSize(code.text, pageWidth - margin * 2);
+                    const bodyHeight = (bodyLines.length * (doc.getFontSize() / doc.internal.scaleFactor) * 1.15); 
+                    const sectionSpacing = 12;
+
+                    if (codesY + titleHeight + bodyHeight + sectionSpacing > pageHeight - margin) {
+                        doc.addPage();
+                        codesY = margin;
+                    }
+
+                    doc.setFontSize(12);
+                    doc.setFont('helvetica', 'bold');
+                    doc.text(titleText, margin, codesY, { maxWidth: pageWidth - margin * 2 });
+                    codesY += titleHeight + 2;
+
+                    doc.setFontSize(11);
+                    doc.setFont('helvetica', 'italic');
+                    doc.text(bodyLines, margin, codesY);
+                    codesY += bodyHeight + sectionSpacing;
+                });
             }
 
-
-            // --- Fill ToC ---
-            doc.setPage(tocPageNumber);
-            cursorY = tocYPosition;
-            doc.setFontSize(11);
-            doc.setFont('helvetica', 'normal');
-
-            tocEntries.forEach(entry => {
-                const dots = '.'.repeat(Math.max(0, 90 - entry.title.length));
-                const text = `${entry.title} ${dots} ${entry.contentPage || ''}`;
-                cursorY = checkPageBreakForToc(cursorY);
-                doc.text(text, margin + (entry.level * 10), cursorY);
-                cursorY += 7;
-            });
-
+    
+            // =================================================================
+            // PHOTOGRAPHS
+            // =================================================================
+            if (imageFiles.length > 0) {
+                doc.addPage();
+                
+                const photosStartPage = doc.internal.getCurrentPageInfo().pageNumber;
+                const photoEntry = tocMap.get('photographs');
+                if (photoEntry) {
+                    photoEntry.contentPage = photosStartPage;
+                }
+    
+                let photoY = margin;
+    
+                doc.setFontSize(16);
+                doc.setFont('helvetica', 'bold');
+                doc.text('Photographs and Attachments', margin, photoY);
+                photoY += 10;
+                
+                for (const file of imageFiles) {
+                    const imgWidth = 120;
+                    const imgHeight = (imgWidth / 4) * 3;
+                    const spacing = 10;
+                    let commentHeight = 0;
+    
+                    if (file.comment) {
+                        doc.setFontSize(9);
+                        doc.setFont('helvetica', 'italic');
+                        const commentLines = doc.splitTextToSize(file.comment, imgWidth);
+                        commentHeight = (commentLines.length * 4) + 2;
+                    }
+    
+                    if (photoY + imgHeight + commentHeight + spacing > pageHeight - margin) {
+                        doc.addPage();
+                        photoY = margin;
+                    }
+                    
+                    try {
+                        doc.addImage(file.dataUrl, file.type.split('/')[1].toUpperCase(), margin, photoY, imgWidth, imgHeight);
+                    } catch (e) {
+                        console.error("Error adding image to PDF:", e);
+                        doc.setFont('helvetica', 'normal').setTextColor(255, 0, 0);
+                        doc.text(`Error rendering image: ${file.name}`, margin, photoY);
+                        doc.setTextColor(0, 0, 0);
+                    }
+                    
+                    if (file.comment) {
+                        doc.setFontSize(9);
+                        doc.setFont('helvetica', 'italic');
+                        const commentLines = doc.splitTextToSize(file.comment, imgWidth);
+                        doc.text(commentLines, margin, photoY + imgHeight + 4);
+                        doc.setFont('helvetica', 'normal');
+                    }
+                    
+                    photoY += imgHeight + commentHeight + spacing;
+                }
+            }
+    
+            // =================================================================
+            // PASS 3: GO BACK AND FILL IN TABLE OF CONTENTS PAGE NUMBERS
+            // =================================================================
+            for (const entry of tocEntries) {
+                if (entry.contentPage) {
+                    doc.setPage(entry.tocPage);
+                    doc.setFontSize(entry.level === 0 ? 12 : 10);
+                    doc.setFont('helvetica', 'normal'); // Font style set per-entry, so normal here is fine.
+    
+                    const pageNum = String(entry.contentPage);
+                    doc.text(pageNum, pageWidth - margin, entry.y, { align: 'right' });
+                }
+            }
+    
+            // =================================================================
+            // FINAL STEP: ADD HEADERS/FOOTERS AND SAVE
+            // =================================================================
             addHeaderFooter();
             const date = new Date().toISOString().split('T')[0];
-            doc.save(`pipeline-assessment-${formData['crossing-id'] || 'untitled'}-${date}.pdf`);
-
+            doc.save(`pipeline-assessment-report-${formData['crossing-id'] || 'untitled'}-${date}.pdf`);
+    
         } catch (error) {
-            console.error("Error generating PDF:", error);
-            alert("An error occurred while generating the PDF. Please check the console.");
+            console.error("Failed to generate report:", error);
+            alert("An unexpected error occurred while generating the PDF. Please check the console for details.");
         } finally {
             loadingOverlay.style.display = 'none';
         }
     }
 
-    const handleAdminUnlock = () => {
-        if (adminPasswordInput.value === '0665') {
-            document.body.classList.add('voice-enabled');
-            adminLockedView.style.display = 'none';
-            adminUnlockedView.style.display = 'flex';
-        } else {
-            alert('Incorrect admin password.');
-        }
-    };
+
+    function handleExampleAssessment() {
+        const exampleData = {
+            "date-of-assessment": new Date().toISOString().substring(0, 10),
+            "assessment-by": "Dana Argo, P.E.",
+            "doc-select": "nu-nh",
+            "crossing-id": "BR-214 - Route 1A Bridge",
+            "town-city": "Dover, NH",
+            "crossing-description": "8-inch steel pipeline is attached to the downstream (east) side of the Route 1A bridge, spanning the Cocheco River. Access is available from the public boat launch area on the north bank.",
+            "gps-lat": "43.1959° N",
+            "gps-lon": "70.8711° W",
+            "road-name": "Route 1A / Dover Point Road",
+            "feature-crossed": "Cocheco River",
+            "bridge-name": "General Sullivan Bridge",
+            "bridge-number": "105/095",
+            "bridge-type": "girder",
+            "bridge-material": "steel",
+            "ambient-temp": "72",
+            "weather-conditions": "Partly cloudy, 72°F with a light 5 mph wind from the southwest. Conditions were dry and safe for inspection.",
+            "vegetation-growth": "Minor vegetation and grass growth was observed at both the north and south abutments. All growth is well clear of the pipeline and support structures and does not impede access or visual inspection.",
+            "scour-erosion": "No evidence of significant scour or erosion was observed at the visible portions of the bridge piers or abutments. The river banks appear stable.",
+            "proximity-water": "The pipeline is approximately 25 feet above the mean high water mark.",
+            "debris-accumulation": "A small amount of driftwood was observed near the base of the central pier, but it is not in contact with or posing a threat to the bridge structure or pipeline.",
+            "system-select": "Dover IP|55 PSIG",
+            "maop": "55 PSIG",
+            "pipe-length": "450",
+            "pipe-length-assessment": "Measured from map",
+            "pipe-diameter": "8",
+            "wall-thickness": "0.322",
+            "wall-thickness-assessment": "Obtained from records",
+            "wall-thickness-comments": "Wall thickness was obtained from original installation records and spot-checked with a UT gauge at the north abutment. Readings were consistent with records.",
+            "pipe-material": "steel",
+            "pipe-grade": "x42",
+            "pipe-grade-assessment": "From records",
+            "plastic-pipe-grade": "",
+            "pipe-sdr": "",
+            "installation-temp": "65",
+            "installation-temp-assessment": "Documented in Original Installation Records",
+            "abutment-a-location": "north",
+            "abutment-b-location": "south",
+            "support-method": "hangers",
+            "primary-support-count": "24",
+            "primary-support-dist-left": "15.5",
+            "primary-support-dist-left-assessment": "Measured",
+            "primary-support-dist-right": "15.5",
+            "primary-support-dist-right-assessment": "Measured",
+            "secondary-support-method": "rollers",
+            "secondary-support-count": "2",
+            "secondary-support-dist-left": "0.5",
+            "secondary-support-dist-left-assessment": "Measured",
+            "secondary-support-dist-right": "15.5",
+            "secondary-support-dist-right-assessment": "Measured",
+            "tertiary-support-method": "",
+            "tertiary-support-count": "",
+            "tertiary-support-dist-left": "",
+            "tertiary-support-dist-left-assessment": "Estimated",
+            "tertiary-support-dist-right": "",
+            "tertiary-support-dist-right-assessment": "Estimated",
+            "other-support-specify": "",
+            "support-condition-thermal-stress-comments": "No signs of significant thermal stress. Hangers appear to be in good condition, allowing for movement.",
+            "pipe-movement-at-supports-comments": "Pipe appears to be adequately supported with no undue restrictions from the primary hanger supports.",
+            "sliding-roller-functionality-comments": "The two roller supports at the north and south abutments show signs of stiffness. They are not seized, but movement appears partially restricted. Recommend cleaning and lubrication.",
+            "support-comments": "All U-bolts and fasteners are tight. Minor surface corrosion noted on several nuts, but no section loss observed. Overall condition is satisfactory.",
+            "expansion-feature": { "pipe_flexibility": 1 },
+            "expansion_loops": [],
+            "other-expansion-specify": "",
+            "expansion-feature-functionality-comments": "The crossing relies on designed flexibility, incorporating several long-radius bends on the approaches, to accommodate thermal expansion and contraction. There are no signs of restraint or excessive stress at these bends.",
+            "expansion-comments": "The method for accommodating thermal movement appears to be functioning as designed.",
+            "coating-type": "fusion-bonded-epoxy",
+            "other-coating-type-specify": "",
+            "coating-comments": "Coating is generally in good condition. A 2-inch scratch with minor surface rust was identified on the top of the pipe at support H-12. No other holidays or damage found during the visual inspection.",
+            "pipe-physical-damage": "No physical damage (dents, gouges) was observed on the pipeline.",
+            "atmospheric-corrosion-details": "Minor surface rust noted on the scratch at H-12. No other atmospheric corrosion was observed on the pipe body.",
+            "clearance-group-v-hwy-value": "25",
+            "clearance-group-v-hwy-units": "ft",
+            "clearance-group-h-hwy-value": "",
+            "clearance-group-h-hwy-units": "ft",
+            "clearance-group-v-water-value": "25",
+            "clearance-group-v-water-units": "ft",
+            "clearance-group-h-abutment-value": "24",
+            "clearance-group-h-abutment-units": "in",
+            "clearance-comments": "All clearances meet or exceed requirements.",
+            "safety-hazards": "High-volume, high-speed vehicle traffic on the bridge deck. Work requires fall protection equipment and certified traffic control.",
+            "access-structures-condition": "N/A - no permanent access structures.",
+            "access-safety-comments": "Access for future maintenance will require a snooper truck or under-bridge rigging, in addition to lane closures.",
+            "other-utilities-bridge": "A conduit for telecommunications is also attached to the east side, approximately 4 feet below the gas line.",
+            "bridge-structure-condition": "The bridge's concrete deck and steel girders appear to be in fair condition. Some minor spalling was noted on the south abutment wall, but it does not appear to affect the pipeline supports.",
+            "third-party-damage-potential": "Low potential for third-party damage due to the pipeline's elevation and position away from the roadway.",
+            "third-party-comments": "The adjacent telecom conduit is well-secured and poses no immediate threat.",
+            "immediate-hazards": "None identified.",
+            "actions-taken-hazards": "N/A",
+            "recommendation-priority": "medium",
+            "recommendations-summary": "1. Clean and lubricate the two roller supports at the north and south abutments.\n2. At support H-12, mechanically clean the 2-inch scratch to bare metal and apply a compatible repair coating.\n3. Continue monitoring on the standard inspection cycle.",
+            "final-summary-evaluation": "The pipeline at this crossing is in generally good condition and fit for service. The primary support hangers are secure, and clearances are adequate. Two minor maintenance items were identified: stiff roller supports and a small coating scratch requiring repair. These items have been assigned a medium priority for resolution to ensure the long-term integrity of the crossing. No immediate hazards were identified.",
+            "fileData": {
+                "photographs": [
+                    { "name": "View_from_North_Abutment.jpg", "comment": "Photo taken from the north abutment looking south along the pipeline.", "dataUrl": "data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mNkYAAAAAYAAjCB0C8AAAAASUVORK5CYII=", "type": "image/jpeg" },
+                    { "name": "Coating_Scratch_H12.jpg", "comment": "Close-up of the coating scratch identified at support H-12.", "dataUrl": "data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mNkYAAAAAYAAjCB0C8AAAAASUVORK5CYII=", "type": "image/jpeg" },
+                    { "name": "South_Roller_Support.jpg", "comment": "View of the roller support at the south abutment, showing signs of stiffness.", "dataUrl": "data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mNkYAAAAAYAAjCB0C8AAAAASUVORK5CYII=", "type": "image/jpeg" }
+                ],
+                "other-docs": []
+            }
+        };
+        populateFormWithData(exampleData);
+    }
     
-    const handleAdminLock = () => {
+    function handleAdminLock() {
         document.body.classList.remove('voice-enabled');
         adminUnlockedView.style.display = 'none';
         adminLockedView.style.display = 'flex';
         adminPasswordInput.value = '';
-    };
+    }
 
-    // --- Event Listeners and Initial Population ---
-    if (tabForm) tabForm.addEventListener('click', () => {
+    function handleAdminUnlock() {
+        const password = adminPasswordInput.value;
+        if (password === "0665") {
+            document.body.classList.add('voice-enabled');
+            adminLockedView.style.display = 'none';
+            adminUnlockedView.style.display = 'flex';
+        } else {
+            adminPasswordInput.style.borderColor = 'red';
+            adminPasswordInput.value = '';
+            adminPasswordInput.placeholder = 'Incorrect';
+            setTimeout(() => {
+                adminPasswordInput.style.borderColor = '';
+                adminPasswordInput.placeholder = 'Code';
+            }, 2000);
+        }
+    }
+
+
+    // --- Event Listeners ---
+    saveButton.addEventListener('click', handleSaveAssessment);
+    openButton.addEventListener('click', handleOpenAssessment);
+    openFileInput.addEventListener('change', loadAssessmentFile);
+    generateReportButton.addEventListener('click', handleGenerateReport);
+    exampleButton.addEventListener('click', handleExampleAssessment);
+    
+    adminUnlockButton.addEventListener('click', handleAdminUnlock);
+    adminLockButton.addEventListener('click', handleAdminLock);
+    adminPasswordInput.addEventListener('keypress', (e) => {
+        if (e.key === 'Enter') {
+            handleAdminUnlock();
+        }
+    });
+
+    tabForm.addEventListener('click', () => {
+        tabForm.classList.add('active');
+        tabProcess.classList.remove('active');
+        tabForm.setAttribute('aria-selected', 'true');
+        tabProcess.setAttribute('aria-selected', 'false');
         formContainer.style.display = 'block';
         processContainer.style.display = 'none';
-        tabForm.classList.add('active');
-        tabForm.setAttribute('aria-selected', 'true');
-        tabProcess.classList.remove('active');
-        tabProcess.setAttribute('aria-selected', 'false');
     });
-
-    if (tabProcess) tabProcess.addEventListener('click', () => {
-        formContainer.style.display = 'none';
-        processContainer.style.display = 'block';
+    tabProcess.addEventListener('click', () => {
         tabProcess.classList.add('active');
-        tabProcess.setAttribute('aria-selected', 'true');
         tabForm.classList.remove('active');
+        tabProcess.setAttribute('aria-selected', 'true');
         tabForm.setAttribute('aria-selected', 'false');
+        processContainer.style.display = 'block';
+        formContainer.style.display = 'none';
     });
 
-    if (saveButton) saveButton.addEventListener('click', handleSaveAssessment);
-    if (openButton) openButton.addEventListener('click', handleOpenAssessment);
-    if (openFileInput) openFileInput.addEventListener('change', loadAssessmentFile);
-    if (generateReportButton) generateReportButton.addEventListener('click', handleGenerateReport);
-    if (exampleButton) exampleButton.addEventListener('click', handleExampleAssessment);
-    if (adminUnlockButton) adminUnlockButton.addEventListener('click', handleAdminUnlock);
-    if (adminLockButton) adminLockButton.addEventListener('click', handleAdminLock);
-    
-    // --- Initial calls ---
+    // --- Initial Population ---
     populateForm();
     populateProcessGuidelines();
-    handleDocChange();
-    handlePipeMaterialChange();
+    handleDocChange(); // Initial call to set up the system select container correctly
+    handlePipeMaterialChange(); // Initial call to set up conditional pipe fields
 });
