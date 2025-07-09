@@ -36,6 +36,7 @@ interface FileWithComment {
     comment: string;
     dataUrl: string; // Base64 encoded data URL
     type: string;    // MIME type
+    orientation?: 'portrait' | 'landscape';
 }
 
 interface FormSectionData {
@@ -140,6 +141,44 @@ function renderFileList(inputId: string) {
 
             fileInfoContainer.appendChild(fileNameEl);
             fileInfoContainer.appendChild(commentInput);
+
+            // Add orientation controls for image files
+            if (fileInfo.type.startsWith('image/')) {
+                const orientationControls = document.createElement('div');
+                orientationControls.className = 'orientation-controls';
+
+                const landscapeBtn = document.createElement('button');
+                landscapeBtn.type = 'button';
+                landscapeBtn.textContent = 'Landscape';
+                landscapeBtn.className = 'orientation-btn';
+                if (fileInfo.orientation === 'landscape' || !fileInfo.orientation) {
+                    landscapeBtn.classList.add('active');
+                }
+                landscapeBtn.onclick = () => {
+                    if (fileDataStore[inputId] && fileDataStore[inputId][index]) {
+                        fileDataStore[inputId][index].orientation = 'landscape';
+                        renderFileList(inputId);
+                    }
+                };
+
+                const portraitBtn = document.createElement('button');
+                portraitBtn.type = 'button';
+                portraitBtn.textContent = 'Portrait';
+                portraitBtn.className = 'orientation-btn';
+                if (fileInfo.orientation === 'portrait') {
+                    portraitBtn.classList.add('active');
+                }
+                portraitBtn.onclick = () => {
+                    if (fileDataStore[inputId] && fileDataStore[inputId][index]) {
+                        fileDataStore[inputId][index].orientation = 'portrait';
+                        renderFileList(inputId);
+                    }
+                };
+                
+                orientationControls.appendChild(landscapeBtn);
+                orientationControls.appendChild(portraitBtn);
+                fileInfoContainer.appendChild(orientationControls);
+            }
             
             listItem.appendChild(filePreviewContainer);
             listItem.appendChild(fileInfoContainer);
@@ -172,23 +211,23 @@ function autoResizeTextarea(textarea: HTMLTextAreaElement) {
     textarea.style.height = `${textarea.scrollHeight}px`;
 }
 
-// --- Helper to add text improvement button ---
-function addImproveButton(wrapper: HTMLElement, inputElement: HTMLTextAreaElement) {
-    const improveButton = document.createElement('button');
-    improveButton.type = 'button';
-    improveButton.classList.add('improve-button');
-    improveButton.textContent = 'Improve';
-    improveButton.setAttribute('aria-label', `Improve text for ${inputElement.id}`);
+// --- Helper to add text reword button ---
+function addRewordButton(wrapper: HTMLElement, inputElement: HTMLTextAreaElement) {
+    const rewordButton = document.createElement('button');
+    rewordButton.type = 'button';
+    rewordButton.classList.add('reword-button');
+    rewordButton.textContent = 'Reword';
+    rewordButton.setAttribute('aria-label', `Reword text for ${inputElement.id}`);
 
-    improveButton.addEventListener('click', async () => {
+    rewordButton.addEventListener('click', async () => {
         const originalText = inputElement.value.trim();
         if (!originalText) {
-            alert("There is no text to improve.");
+            alert("There is no text to reword.");
             return;
         }
 
-        improveButton.disabled = true;
-        improveButton.textContent = 'Working...';
+        rewordButton.disabled = true;
+        rewordButton.textContent = 'Working...';
         
         const oldSuggestions = wrapper.querySelector('.suggestions-container');
         if (oldSuggestions) {
@@ -196,36 +235,39 @@ function addImproveButton(wrapper: HTMLElement, inputElement: HTMLTextAreaElemen
         }
         
         try {
-            const ai = new GoogleGenAI({apiKey: process.env.API_KEY});
-            const prompt = `Rewrite the following text for a professional engineering field report. Your response must be in a JSON array format containing 3 distinct alternative versions, like ["suggestion 1", "suggestion 2", "suggestion 3"]. For each suggestion, use well-structured paragraphs and professional, formal language appropriate for an engineering document. Improve clarity, grammar, and sentence structure, while preserving all original facts and the core meaning. Do not add any new information. Original text: "${originalText}"`;
-            
-            const response: GenerateContentResponse = await ai.models.generateContent({
-                model: 'gemini-2.5-flash-preview-04-17',
-                contents: prompt,
-                config: { responseMimeType: "application/json" }
+            // Call the backend API
+            const response = await fetch('/api/reword', {
+                method: 'POST',
+                headers: {
+                    'Content-Type': 'application/json',
+                },
+                body: JSON.stringify({ text: originalText }),
             });
-            
-            let suggestions: string[] = [];
-            let jsonStr = response.text.trim();
-            const fenceRegex = /^```(\w*)?\s*\n?(.*?)\n?\s*```$/s;
-            const match = jsonStr.match(fenceRegex);
-            if (match && match[2]) {
-              jsonStr = match[2].trim();
-            }
-            
-            try {
-                const parsedData = JSON.parse(jsonStr);
-                if (Array.isArray(parsedData) && parsedData.every(item => typeof item === 'string')) {
-                    suggestions = parsedData;
-                } else {
-                    suggestions = [response.text];
-                }
-            } catch (e) {
-                suggestions = [response.text]; 
+
+            if (!response.ok) {
+                const errorData = await response.text();
+                throw new Error(`API Error: ${response.status} ${response.statusText}. ${errorData}`);
             }
 
+            const responseData = await response.json();
+            
+            let suggestions: string[] = [];
+            // Expecting the backend to return { suggestions: ["...", "...", "..."] }
+            if (responseData && Array.isArray(responseData.suggestions)) {
+                suggestions = responseData.suggestions;
+            } else if (responseData && typeof responseData.suggestion === 'string') {
+                // Also handle a single suggestion
+                suggestions = [responseData.suggestion];
+            } else if (typeof responseData === 'string') {
+                // Or if the API just returns a string
+                suggestions = [responseData];
+            } else {
+                 throw new Error("Received an unexpected response format from the server.");
+            }
+
+
             if (suggestions.length === 0) {
-                alert("Could not generate improvement suggestions.");
+                alert("Could not generate reword suggestions.");
                 return;
             }
 
@@ -267,15 +309,15 @@ function addImproveButton(wrapper: HTMLElement, inputElement: HTMLTextAreaElemen
             wrapper.appendChild(suggestionsContainer);
 
         } catch (error) {
-            console.error("Error improving text:", error);
+            console.error("Error rewording text:", error);
             alert("Could not retrieve suggestions. Please check the console for more details.");
         } finally {
-            improveButton.disabled = false;
-            improveButton.textContent = 'Improve';
+            rewordButton.disabled = false;
+            rewordButton.textContent = 'Reword';
         }
     });
 
-    wrapper.appendChild(improveButton);
+    wrapper.appendChild(rewordButton);
 }
 
 // --- Helper to add voice-to-text microphone button ---
@@ -613,7 +655,7 @@ function createFieldElement(field: FormField): HTMLElement {
         inputWrapper.appendChild(textarea);
         if (voiceEnabledFieldIds.includes(field.id)) {
             addMicrophoneButton(inputWrapper as HTMLElement, textarea);
-            addImproveButton(inputWrapper as HTMLElement, textarea);
+            addRewordButton(inputWrapper as HTMLElement, textarea);
         }
 
     } else if (field.type === 'file') {
@@ -631,7 +673,13 @@ function createFieldElement(field: FormField): HTMLElement {
                 for (const file of Array.from(files)) {
                   try {
                     const dataUrl = await readFileAsDataURL(file);
-                    fileDataStore[field.id].push({ name: file.name, comment: '', dataUrl, type: file.type });
+                    fileDataStore[field.id].push({ 
+                        name: file.name, 
+                        comment: '', 
+                        dataUrl, 
+                        type: file.type, 
+                        orientation: 'landscape' 
+                    });
                   } catch (error) {
                     console.error("Error reading file:", file.name, error);
                     alert(`Could not read file: ${file.name}`);
@@ -1639,7 +1687,7 @@ document.addEventListener('DOMContentLoaded', () => {
             <h4>10. Documentation</h4>
             <p>This section is for uploading all collected visual evidence and records.</p>
             <ul>
-                <li><strong>Upload Photographs/Sketches:</strong> Upload all digital photographs. It is critical to use the comment field for each photo to provide a descriptive caption (e.g., "View from North abutment looking South," "Close-up of corrosion at support H-3," "Sketch of dent measurement on top of pipe").</li>
+                <li><strong>Upload Photographs/Sketches:</strong> Upload all digital photographs. It is critical to use the comment field for each photo to provide a descriptive caption (e.g., "View from North abutment looking South," "Close-up of corrosion at support H-3," "Sketch of dent measurement on top of pipe"). Use the orientation buttons to set how the photo should appear in the final PDF report.</li>
                 <li><strong>Upload Other Documents:</strong> Upload any supporting files, such as sketches, previous reports, or relevant pages from construction drawings.</li>
             </ul>
 
@@ -1942,8 +1990,8 @@ document.addEventListener('DOMContentLoaded', () => {
             
             try {
                 const promises = [
-                    ai.models.generateContent({ model: 'gemini-2.5-flash-preview-04-17', contents: execSummaryPrompt }),
-                    ai.models.generateContent({ model: 'gemini-2.5-flash-preview-04-17', contents: finalSummaryPrompt }),
+                    ai.models.generateContent({ model: 'gemini-2.5-flash', contents: execSummaryPrompt }),
+                    ai.models.generateContent({ model: 'gemini-2.5-flash', contents: finalSummaryPrompt }),
                 ];
 
                 const [execResult, finalResult] = await Promise.allSettled(promises);
@@ -1973,10 +2021,10 @@ document.addEventListener('DOMContentLoaded', () => {
 
         modal.style.display = 'flex';
         
-        // Add improve buttons if admin
+        // Add reword buttons if admin
         if (document.body.classList.contains('voice-enabled')) {
-            addImproveButton(document.getElementById('modal-exec-summary-wrapper')!, execSummaryTextarea);
-            addImproveButton(document.getElementById('modal-final-summary-wrapper')!, finalSummaryTextarea);
+            addRewordButton(document.getElementById('modal-exec-summary-wrapper')!, execSummaryTextarea);
+            addRewordButton(document.getElementById('modal-final-summary-wrapper')!, finalSummaryTextarea);
         }
 
         const modalGeneratePdfButton = document.getElementById('modal-generate-pdf-button')!;
@@ -2324,11 +2372,18 @@ document.addEventListener('DOMContentLoaded', () => {
                 photoY += 10;
                 
                 for (const file of imageFiles) {
-                    const imgWidth = 120;
-                    const imgHeight = (imgWidth / 4) * 3;
+                    let imgWidth, imgHeight;
                     const spacing = 10;
+
+                    if (file.orientation === 'portrait') {
+                        imgWidth = 110;
+                        imgHeight = (imgWidth / 3) * 4; // ~146.67
+                    } else { // landscape or default
+                        imgWidth = 160;
+                        imgHeight = (imgWidth / 16) * 9; // 90
+                    }
+                    
                     let commentHeight = 0;
-    
                     if (file.comment) {
                         doc.setFontSize(9);
                         doc.setFont('helvetica', 'italic');
@@ -2341,8 +2396,10 @@ document.addEventListener('DOMContentLoaded', () => {
                         photoY = margin;
                     }
                     
+                    const imgX = (pageWidth - imgWidth) / 2;
+                    
                     try {
-                        doc.addImage(file.dataUrl, file.type.split('/')[1].toUpperCase(), margin, photoY, imgWidth, imgHeight);
+                        doc.addImage(file.dataUrl, file.type.split('/')[1].toUpperCase(), imgX, photoY, imgWidth, imgHeight);
                     } catch (e) {
                         console.error("Error adding image to PDF:", e);
                         doc.setFont('helvetica', 'normal').setTextColor(255, 0, 0);
@@ -2354,7 +2411,7 @@ document.addEventListener('DOMContentLoaded', () => {
                         doc.setFontSize(9);
                         doc.setFont('helvetica', 'italic');
                         const commentLines = doc.splitTextToSize(file.comment, imgWidth);
-                        doc.text(commentLines, margin, photoY + imgHeight + 4);
+                        doc.text(commentLines, imgX, photoY + imgHeight + 4);
                         doc.setFont('helvetica', 'normal');
                     }
                     
@@ -2487,9 +2544,9 @@ document.addEventListener('DOMContentLoaded', () => {
             "final-summary-evaluation": "The pipeline at this crossing is in generally good condition and fit for service. The primary support hangers are secure, and clearances are adequate. Two minor maintenance items were identified: stiff roller supports and a small coating scratch requiring repair. These items have been assigned a medium priority for resolution to ensure the long-term integrity of the crossing. No immediate hazards were identified.",
             "fileData": {
                 "photographs": [
-                    { "name": "View_from_North_Abutment.jpg", "comment": "Photo taken from the north abutment looking south along the pipeline.", "dataUrl": "data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mNkYAAAAAYAAjCB0C8AAAAASUVORK5CYII=", "type": "image/jpeg" },
-                    { "name": "Coating_Scratch_H12.jpg", "comment": "Close-up of the coating scratch identified at support H-12.", "dataUrl": "data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mNkYAAAAAYAAjCB0C8AAAAASUVORK5CYII=", "type": "image/jpeg" },
-                    { "name": "South_Roller_Support.jpg", "comment": "View of the roller support at the south abutment, showing signs of stiffness.", "dataUrl": "data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mNkYAAAAAYAAjCB0C8AAAAASUVORK5CYII=", "type": "image/jpeg" }
+                    { "name": "View_from_North_Abutment.jpg", "comment": "Photo taken from the north abutment looking south along the pipeline.", "dataUrl": "data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mNkYAAAAAYAAjCB0C8AAAAASUVORK5CYII=", "type": "image/jpeg", "orientation": "landscape" },
+                    { "name": "Coating_Scratch_H12.jpg", "comment": "Close-up of the coating scratch identified at support H-12.", "dataUrl": "data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mNkYAAAAAYAAjCB0C8AAAAASUVORK5CYII=", "type": "image/jpeg", "orientation": "portrait" },
+                    { "name": "South_Roller_Support.jpg", "comment": "View of the roller support at the south abutment, showing signs of stiffness.", "dataUrl": "data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mNkYAAAAAYAAjCB0C8AAAAASUVORK5CYII=", "type": "image/jpeg", "orientation": "landscape" }
                 ],
                 "other-docs": []
             }

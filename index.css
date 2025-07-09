@@ -712,6 +712,35 @@ header h1 {
     background-color: #fdf2f2;
 }
 
+.orientation-controls {
+    display: flex;
+    gap: 5px;
+    margin-top: 4px;
+}
+
+.orientation-btn {
+    padding: 4px 10px;
+    font-size: 0.8em;
+    font-weight: 500;
+    background-color: #f0f4f8;
+    border: 1px solid #bcccdc;
+    border-radius: 4px;
+    cursor: pointer;
+    transition: background-color 0.2s, border-color 0.2s, color 0.2s;
+    color: #555;
+}
+
+.orientation-btn.active {
+    background-color: #005A9C;
+    border-color: #004477;
+    color: #fff;
+    font-weight: 600;
+}
+
+.orientation-btn:not(.active):hover {
+    background-color: #dde4eb;
+}
+
 /* Process Guidelines Specific Styles */
 #process-guidelines-container {
     padding: 20px;
@@ -761,7 +790,7 @@ header h1 {
     color: #555;
 }
 
-/* Voice-to-Text and Improve Button Styles */
+/* Voice-to-Text and Reword Button Styles */
 .input-with-mic-wrapper {
     position: relative;
     display: flex;
@@ -772,7 +801,7 @@ header h1 {
     /* Increase padding to prevent text from overlapping buttons */
     padding-right: 115px !important; 
 }
-.mic-button, .improve-button {
+.mic-button, .reword-button {
     position: absolute;
     top: 8px;
     background: transparent;
@@ -782,7 +811,7 @@ header h1 {
     display: none; /* Hidden by default */
 }
 body.voice-enabled .mic-button,
-body.voice-enabled .improve-button {
+body.voice-enabled .reword-button {
     display: block; /* Show only when admin unlocks */
 }
 
@@ -801,8 +830,8 @@ body.voice-enabled .improve-button {
     animation: pulse 1.5s infinite;
 }
 
-/* Improve Button */
-.improve-button {
+/* Reword Button */
+.reword-button {
     right: 48px; /* Position next to mic button */
     background: #eef1f5;
     border: 1px solid #bcccdc;
@@ -813,11 +842,11 @@ body.voice-enabled .improve-button {
     padding: 6px 10px;
     line-height: 1.2;
 }
-.improve-button:hover {
+.reword-button:hover {
     background-color: #d8e0e7;
     border-color: #adb5bd;
 }
-.improve-button:disabled {
+.reword-button:disabled {
     background-color: #f8f9fa;
     color: #6c757d;
     cursor: not-allowed;
