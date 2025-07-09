@@ -1,6 +1,4 @@
 // index.tsx
-import { GoogleGenAI, GenerateContentResponse } from "@google/genai";
-
 // Extend the global Window interface to include jsPDF and SpeechRecognition
 declare global {
     interface Window {
@@ -235,36 +233,30 @@ function addRewordButton(wrapper: HTMLElement, inputElement: HTMLTextAreaElement
         }
         
         try {
-            // Call the backend API
-            const response = await fetch('/api/reword', {
+            // Call the OpenAI API
+            const response = await fetch('https://api.openai.com/v1/chat/completions', {
                 method: 'POST',
                 headers: {
                     'Content-Type': 'application/json',
+                    'Authorization': `Bearer ${process.env.OPENAI_API_KEY}`
                 },
-                body: JSON.stringify({ text: originalText }),
+                body: JSON.stringify({
+                    model: 'gpt-3.5-turbo',
+                    messages: [{ 
+                        role: 'user', 
+                        content: `Reword the following text. Provide three professional-sounding alternative versions, each on a new line, without any numbering, bullet points, or extra commentary: "${originalText}"`
+                    }]
+                }),
             });
 
             if (!response.ok) {
-                const errorData = await response.text();
-                throw new Error(`API Error: ${response.status} ${response.statusText}. ${errorData}`);
+                const errorData = await response.json();
+                throw new Error(errorData.error?.message || `API Error: ${response.status} ${response.statusText}.`);
             }
 
             const responseData = await response.json();
-            
-            let suggestions: string[] = [];
-            // Expecting the backend to return { suggestions: ["...", "...", "..."] }
-            if (responseData && Array.isArray(responseData.suggestions)) {
-                suggestions = responseData.suggestions;
-            } else if (responseData && typeof responseData.suggestion === 'string') {
-                // Also handle a single suggestion
-                suggestions = [responseData.suggestion];
-            } else if (typeof responseData === 'string') {
-                // Or if the API just returns a string
-                suggestions = [responseData];
-            } else {
-                 throw new Error("Received an unexpected response format from the server.");
-            }
-
+            const rawContent = responseData.choices[0]?.message?.content || '';
+            const suggestions = rawContent.split('\n').map(s => s.trim()).filter(Boolean);
 
             if (suggestions.length === 0) {
                 alert("Could not generate reword suggestions.");
@@ -1982,26 +1974,47 @@ document.addEventListener('DOMContentLoaded', () => {
 
             const fullTextSummary = generateTextSummary(formData);
 
-            // --- Summary Generation ---
-            const ai = new GoogleGenAI({ apiKey: process.env.API_KEY });
-
+            // --- Summary Generation using OpenAI ---
             const execSummaryPrompt = `Based on the following pipeline bridge crossing assessment data, write a detailed and comprehensive professional Executive Summary for an engineering report. Structure the summary with clear paragraphs that flow nicely, using formal, professional language. This summary should be thorough, elaborating on the overall condition, all findings from minor to high-priority, and the specific recommendations made. Where applicable, reference relevant industry standards such as 49 CFR 192 and ASME B31.8. Ensure the summary is extensive enough to provide a full overview without being overly brief. Data:\n${fullTextSummary}`;
             const finalSummaryPrompt = `Based on the following pipeline bridge crossing assessment data, write a comprehensive "Final Summary of Evaluation". This should synthesize all key findings from the report into one or more detailed concluding paragraphs. Use formal, professional language and structure the response into well-formed paragraphs. Data:\n${fullTextSummary}`;
             
             try {
+                const callOpenAI = async (prompt: string) => {
+                    const response = await fetch('https://api.openai.com/v1/chat/completions', {
+                        method: 'POST',
+                        headers: {
+                            'Content-Type': 'application/json',
+                            'Authorization': `Bearer ${process.env.OPENAI_API_KEY}`
+                        },
+                        body: JSON.stringify({
+                            model: 'gpt-3.5-turbo',
+                            messages: [{ role: 'user', content: prompt }]
+                        })
+                    });
+
+                    if (!response.ok) {
+                        const errorText = await response.text();
+                        console.error("OpenAI API Error:", errorText);
+                        throw new Error(`OpenAI request failed with status ${response.status}`);
+                    }
+
+                    const data = await response.json();
+                    return data.choices[0]?.message?.content || '';
+                };
+                
                 const promises = [
-                    ai.models.generateContent({ model: 'gemini-2.5-flash', contents: execSummaryPrompt }),
-                    ai.models.generateContent({ model: 'gemini-2.5-flash', contents: finalSummaryPrompt }),
+                    callOpenAI(execSummaryPrompt),
+                    callOpenAI(finalSummaryPrompt),
                 ];
 
                 const [execResult, finalResult] = await Promise.allSettled(promises);
 
                 execSummary = (execResult.status === 'fulfilled') 
-                    ? execResult.value.text.replace(/[*#]/g, '')
+                    ? execResult.value.replace(/[*#]/g, '')
                     : `Warning: Could not connect to the generation service to generate summary. Please check the console for details.`;
         
                 finalSummary = (finalResult.status === 'fulfilled') 
-                    ? finalResult.value.text.replace(/[*#]/g, '')
+                    ? finalResult.value.replace(/[*#]/g, '')
                     : `Warning: Could not connect to the generation service to generate summary. Please check the console for details.`;
             } catch (error) {
                  console.error("Error generating report summaries:", error);
@@ -2617,3 +2630,5 @@ document.addEventListener('DOMContentLoaded', () => {
     handleDocChange(); // Initial call to set up the system select container correctly
     handlePipeMaterialChange(); // Initial call to set up conditional pipe fields
 });
+
+export {};
