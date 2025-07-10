@@ -91,13 +91,6 @@ header h1 {
     width: 100%;
     justify-content: flex-end;
 }
-
-#admin-locked-view, #admin-unlocked-view {
-    display: flex;
-    align-items: center;
-    gap: 8px;
-}
-
 #admin-unlock-container label {
     font-weight: 600;
     font-size: 0.9em;
@@ -615,7 +608,7 @@ header h1 {
     border-bottom: 1px solid #dde4eb;
     display: flex;
     flex-direction: row;
-    align-items: center;
+    align-items: flex-start;
     gap: 15px;
     background-color: #fbfcfe;
 }
@@ -687,30 +680,6 @@ header h1 {
     font-style: italic;
 }
 
-.remove-file-button {
-    background: transparent;
-    border: none;
-    color: #bbb;
-    cursor: pointer;
-    font-size: 1.5rem;
-    font-weight: bold;
-    line-height: 1;
-    padding: 0;
-    margin-left: auto;
-    flex-shrink: 0;
-    transition: color 0.2s ease, background-color 0.2s ease;
-    width: 30px;
-    height: 30px;
-    display: flex;
-    align-items: center;
-    justify-content: center;
-    border-radius: 50%;
-}
-
-.remove-file-button:hover {
-    color: #d9534f;
-    background-color: #fdf2f2;
-}
 
 /* Process Guidelines Specific Styles */
 #process-guidelines-container {
