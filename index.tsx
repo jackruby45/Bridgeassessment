@@ -1338,7 +1338,10 @@ const formSections: FormSectionData[] = [
                     { value: "immediate", text: "Immediate (within 24 hours)" },
                     { value: "high", text: "High (within 1 month)" },
                     { value: "medium", text: "Medium (within 6 months)" },
-                    { value: "low", text: "Low (within 1 year / next inspection cycle)" },
+                    { value: "12-months", text: "Within 12 months" },
+                    { value: "2-years", text: "2 Years" },
+                    { value: "3-years", text: "3 Years" },
+                    { value: "next-corrosion-cycle", text: "Next Corrosion Inspection Cycle" },
                     { value: "no_recommendation", text: "No Recommendation" },
                     { value: "tbd", text: "To be determined" }
                 ]
@@ -3000,6 +3003,12 @@ document.addEventListener('DOMContentLoaded', () => {
         if (apiKeyInput) {
             apiKeyInput.value = ''; // Clear for security
         }
+
+        const generateReportButton = document.getElementById('generate-report-button') as HTMLButtonElement;
+        if (generateReportButton) {
+            generateReportButton.disabled = true;
+            generateReportButton.setAttribute('title', 'Admin Mode required to generate reports');
+        }
     }
 
     function handleAdminUnlock() {
@@ -3010,6 +3019,11 @@ document.addEventListener('DOMContentLoaded', () => {
             adminUnlockedView.style.display = 'flex';
             if (apiKeyInput && userApiKey) {
                 apiKeyInput.value = userApiKey; // Show saved key on unlock
+            }
+            const generateReportButton = document.getElementById('generate-report-button') as HTMLButtonElement;
+            if (generateReportButton) {
+                generateReportButton.disabled = false;
+                generateReportButton.removeAttribute('title');
             }
         } else {
             adminPasswordInput.style.borderColor = 'red';

@@ -35,6 +35,14 @@ header h1 {
     font-weight: 600;
 }
 
+header .subtitle {
+    font-size: 0.6em;
+    font-weight: 400;
+    color: #555;
+    margin-top: 5px;
+    letter-spacing: 0.5px;
+}
+
 .controls-row {
     display: flex;
     align-items: center;
@@ -75,6 +83,17 @@ header h1 {
 
 .control-button.secondary:hover {
     background-color: #5a6268;
+}
+
+.control-button[disabled] {
+    background-color: #6c757d;
+    opacity: 0.6;
+    cursor: not-allowed;
+    box-shadow: none;
+}
+
+.control-button[disabled]:hover {
+    background-color: #6c757d;
 }
 
 .input-with-toggle {
