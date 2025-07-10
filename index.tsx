@@ -36,6 +36,7 @@ interface FileWithComment {
     comment: string;
     dataUrl: string; // Base64 encoded data URL
     type: string;    // MIME type
+    orientation?: 'portrait' | 'landscape';
 }
 
 interface FormSectionData {
@@ -51,8 +52,9 @@ interface ExpansionLoopData {
     source: string;
 }
 
-// Global state for the user-provided API key
+// --- Global variable for user-provided API key ---
 let userApiKey: string | null = null;
+
 
 // List of field IDs that should have voice-to-text enabled
 const voiceEnabledFieldIds = [
@@ -143,8 +145,62 @@ function renderFileList(inputId: string) {
 
             fileInfoContainer.appendChild(fileNameEl);
             fileInfoContainer.appendChild(commentInput);
+
+            // Add orientation controls for image files
+            if (fileInfo.type.startsWith('image/')) {
+                const orientationControls = document.createElement('div');
+                orientationControls.className = 'orientation-controls';
+
+                const landscapeBtn = document.createElement('button');
+                landscapeBtn.type = 'button';
+                landscapeBtn.textContent = 'Landscape';
+                landscapeBtn.className = 'orientation-btn';
+                if (fileInfo.orientation === 'landscape' || !fileInfo.orientation) {
+                    landscapeBtn.classList.add('active');
+                }
+                landscapeBtn.onclick = () => {
+                    if (fileDataStore[inputId] && fileDataStore[inputId][index]) {
+                        fileDataStore[inputId][index].orientation = 'landscape';
+                        renderFileList(inputId);
+                    }
+                };
+
+                const portraitBtn = document.createElement('button');
+                portraitBtn.type = 'button';
+                portraitBtn.textContent = 'Portrait';
+                portraitBtn.className = 'orientation-btn';
+                if (fileInfo.orientation === 'portrait') {
+                    portraitBtn.classList.add('active');
+                }
+                portraitBtn.onclick = () => {
+                    if (fileDataStore[inputId] && fileDataStore[inputId][index]) {
+                        fileDataStore[inputId][index].orientation = 'portrait';
+                        renderFileList(inputId);
+                    }
+                };
+                
+                orientationControls.appendChild(landscapeBtn);
+                orientationControls.appendChild(portraitBtn);
+                fileInfoContainer.appendChild(orientationControls);
+            }
+            
             listItem.appendChild(filePreviewContainer);
             listItem.appendChild(fileInfoContainer);
+
+            // Add remove button
+            const removeButton = document.createElement('button');
+            removeButton.type = 'button';
+            removeButton.innerHTML = '&times;'; // '×' symbol
+            removeButton.className = 'remove-file-button';
+            removeButton.setAttribute('aria-label', `Remove ${fileInfo.name}`);
+            removeButton.onclick = () => {
+                if (fileDataStore[inputId]) {
+                    fileDataStore[inputId].splice(index, 1);
+                    renderFileList(inputId); // Re-render the list
+                }
+            };
+            listItem.appendChild(removeButton);
+
             list.appendChild(listItem);
         });
         container.appendChild(list);
@@ -168,15 +224,14 @@ function addImproveButton(wrapper: HTMLElement, inputElement: HTMLTextAreaElemen
     improveButton.setAttribute('aria-label', `Improve text for ${inputElement.id}`);
 
     improveButton.addEventListener('click', async () => {
-        const apiKey = userApiKey;
-        if (!apiKey) {
-            alert("Please unlock admin features and set your API key first.");
-            return;
-        }
-
         const originalText = inputElement.value.trim();
         if (!originalText) {
             alert("There is no text to improve.");
+            return;
+        }
+
+        if (!userApiKey) {
+            alert("API Key is not set. Please unlock admin features and set an API key.");
             return;
         }
 
@@ -189,11 +244,11 @@ function addImproveButton(wrapper: HTMLElement, inputElement: HTMLTextAreaElemen
         }
         
         try {
-            const ai = new GoogleGenAI({apiKey: apiKey});
-            const prompt = `Rewrite the following text for a professional engineering field report. Provide 3 distinct alternative versions in a JSON array format, like ["suggestion 1", "suggestion 2", "suggestion 3"]. Improve clarity, grammar, and sentence structure, but preserve all original facts and the core meaning. Do not add any new information. Original text: "${originalText}"`;
+            const ai = new GoogleGenAI({apiKey: userApiKey});
+            const prompt = `Rewrite the following text for a professional engineering field report. Your response must be in a JSON array format containing 3 distinct alternative versions, like ["suggestion 1", "suggestion 2", "suggestion 3"]. For each suggestion, use well-structured paragraphs and professional, formal language appropriate for an engineering document. Improve clarity, grammar, and sentence structure, while preserving all original facts and the core meaning. Do not add any new information. Original text: "${originalText}"`;
             
             const response: GenerateContentResponse = await ai.models.generateContent({
-                model: 'gemini-2.5-flash-preview-04-17',
+                model: 'gemini-2.5-flash',
                 contents: prompt,
                 config: { responseMimeType: "application/json" }
             });
@@ -383,6 +438,34 @@ function addExpansionLoopFieldset(container: HTMLElement, index: number) {
     fieldset.appendChild(sourceFieldset);
 
     container.appendChild(fieldset);
+}
+
+function handleAbutmentAChange(event: Event) {
+    const abutmentASelect = event.target as HTMLSelectElement;
+    const abutmentBSelect = document.getElementById('abutment-b-location') as HTMLSelectElement;
+    if (!abutmentBSelect) return;
+
+    const selectedValue = abutmentASelect.value;
+    let oppositeValue = '';
+
+    switch (selectedValue) {
+        case 'north':
+            oppositeValue = 'south';
+            break;
+        case 'south':
+            oppositeValue = 'north';
+            break;
+        case 'east':
+            oppositeValue = 'west';
+            break;
+        case 'west':
+            oppositeValue = 'east';
+            break;
+        default:
+            oppositeValue = ''; // Handle the "Select Direction..." case
+    }
+    
+    abutmentBSelect.value = oppositeValue;
 }
 
 
@@ -596,7 +679,13 @@ function createFieldElement(field: FormField): HTMLElement {
                 for (const file of Array.from(files)) {
                   try {
                     const dataUrl = await readFileAsDataURL(file);
-                    fileDataStore[field.id].push({ name: file.name, comment: '', dataUrl, type: file.type });
+                    fileDataStore[field.id].push({ 
+                        name: file.name, 
+                        comment: '', 
+                        dataUrl, 
+                        type: file.type, 
+                        orientation: 'landscape' 
+                    });
                   } catch (error) {
                     console.error("Error reading file:", file.name, error);
                     alert(`Could not read file: ${file.name}`);
@@ -772,6 +861,36 @@ const systemData = {
     ]
 };
 
+// Reusable options for support methods
+const supportMethodOptions = [
+    { value: "", text: "Select Support Method..." },
+    { value: "hangers", text: "Hangers from Bridge Structure" },
+    { value: "clevis-hanger", text: "Clevis Hanger" },
+    { value: "u-bolt-to-structure", text: "U-Bolt to Structure" },
+    { value: "rollers", text: "Roller Supports on Cross Members/Girders/Piers/Abutments" },
+    { value: "roller-supported-below-bracket", text: "Roller Supported Below - With U-Bolt or Over Pipe Bracket" },
+    { value: "rollers-suspended", text: "Rollers Suspended from Above" },
+    { value: "double-rollers-suspended", text: "Double Rollers Suspended from Above" },
+    { value: "saddles", text: "Saddle Supports on Piers/Abutments" },
+    { value: "brackets", text: "Brackets Attached to Bridge Deck/Girders" },
+    { value: "pipe-stand", text: "Pipe Stand/Stanchion on Deck" },
+    { value: "self-supporting", text: "Self-Supporting Span (e.g., dedicated pipe bridge)" },
+    { value: "other", text: "Other (Specify Below)" }
+];
+
+// Reusable options for cardinal directions
+const directionOptions = [
+    { value: "", text: "Select Direction..." },
+    { value: "north", text: "North" },
+    { value: "south", text: "South" },
+    { value: "east", text: "East" },
+    { value: "west", text: "West" }
+];
+
+// Reusable options for support distance source
+const supportDistanceSourceOptions = ["Estimated", "Measured", "Obtained from installation records"];
+
+
 // --- Form structure definition ---
 const formSections: FormSectionData[] = [
     {
@@ -876,6 +995,13 @@ const formSections: FormSectionData[] = [
             },
             { label: "MAOP:", id: "maop", type: "text", placeholder: "Max. Allowable Operating Pressure" },
             {
+                label: "Pipe Length (ft):",
+                id: "pipe-length",
+                type: "number",
+                placeholder: "e.g., 250",
+                assessmentOptions: ["Estimated", "Measured", "Obtained from construction records", "Measured from map", "Other"],
+            },
+            {
                 label: "Pipe Diameter (inches):",
                 id: "pipe-diameter",
                 type: "select",
@@ -966,23 +1092,100 @@ const formSections: FormSectionData[] = [
         id: "support-system",
         fields: [
             {
+                label: "Abutment A Location (Left):",
+                id: "abutment-a-location",
+                type: "select",
+                options: directionOptions
+            },
+            {
+                label: "Abutment B Location (Right):",
+                id: "abutment-b-location",
+                type: "select",
+                options: directionOptions
+            },
+            {
                 label: "Primary Support Method:",
                 id: "support-method",
                 type: "select",
-                options: [
-                    { value: "", text: "Select Support Method..." },
-                    { value: "hangers", text: "Hangers from Bridge Structure" },
-                    { value: "clevis-hanger", text: "Clevis Hanger" },
-                    { value: "u-bolt-to-structure", text: "U-Bolt to Structure" },
-                    { value: "rollers", text: "Roller Supports on Piers/Abutments" },
-                    { value: "rollers-suspended", text: "Rollers Suspended from Above" },
-                    { value: "double-rollers-suspended", text: "Double Rollers Suspended from Above" },
-                    { value: "saddles", text: "Saddle Supports on Piers/Abutments" },
-                    { value: "brackets", text: "Brackets Attached to Bridge Deck/Girders" },
-                    { value: "pipe-stand", text: "Pipe Stand/Stanchion on Deck" },
-                    { value: "self-supporting", text: "Self-Supporting Span (e.g., dedicated pipe bridge)" },
-                    { value: "other", text: "Other (Specify Below)" }
-                ]
+                options: supportMethodOptions
+            },
+            {
+                label: "Number of Supports:",
+                id: "primary-support-count",
+                type: "number",
+                placeholder: "e.g., 10"
+            },
+            {
+                label: "Distance to nearest support to the left (ft):",
+                id: "primary-support-dist-left",
+                type: "number",
+                placeholder: "feet",
+                assessmentOptions: supportDistanceSourceOptions,
+                defaultAssessmentOption: "Estimated"
+            },
+            {
+                label: "Distance to nearest support to the right (ft):",
+                id: "primary-support-dist-right",
+                type: "number",
+                placeholder: "feet",
+                assessmentOptions: supportDistanceSourceOptions,
+                defaultAssessmentOption: "Estimated"
+            },
+            {
+                label: "Secondary Support Method:",
+                id: "secondary-support-method",
+                type: "select",
+                options: supportMethodOptions
+            },
+            {
+                label: "Number of Supports:",
+                id: "secondary-support-count",
+                type: "number",
+                placeholder: "e.g., 4"
+            },
+            {
+                label: "Distance to nearest support to the left (ft):",
+                id: "secondary-support-dist-left",
+                type: "number",
+                placeholder: "feet",
+                assessmentOptions: supportDistanceSourceOptions,
+                defaultAssessmentOption: "Estimated"
+            },
+            {
+                label: "Distance to nearest support to the right (ft):",
+                id: "secondary-support-dist-right",
+                type: "number",
+                placeholder: "feet",
+                assessmentOptions: supportDistanceSourceOptions,
+                defaultAssessmentOption: "Estimated"
+            },
+            {
+                label: "Tertiary Support Method:",
+                id: "tertiary-support-method",
+                type: "select",
+                options: supportMethodOptions
+            },
+            {
+                label: "Number of Supports:",
+                id: "tertiary-support-count",
+                type: "number",
+                placeholder: "e.g., 2"
+            },
+            {
+                label: "Distance to nearest support to the left (ft):",
+                id: "tertiary-support-dist-left",
+                type: "number",
+                placeholder: "feet",
+                assessmentOptions: supportDistanceSourceOptions,
+                defaultAssessmentOption: "Estimated"
+            },
+            {
+                label: "Distance to nearest support to the right (ft):",
+                id: "tertiary-support-dist-right",
+                type: "number",
+                placeholder: "feet",
+                assessmentOptions: supportDistanceSourceOptions,
+                defaultAssessmentOption: "Estimated"
             },
             { label: "Specify Other Support Method:", id: "other-support-specify", type: "textarea", placeholder: "Describe if 'Other' was selected." },
             { label: "Comments on Support Condition (Thermal Stress):", id: "support-condition-thermal-stress-comments", type: "textarea", placeholder: "Note any signs of thermal stress, such as bent supports or strained connections." },
@@ -1056,8 +1259,7 @@ const formSections: FormSectionData[] = [
                 options: [
                     { value: "v-hwy", text: "Vertical clearance from highway/roadway" },
                     { value: "h-hwy", text: "Horizontal clearance from highway/roadway" },
-                    { value: "v-water", text: "Vertical clearance from high water mark" },
-                    { value: "h-abutment", text: "Horizontal clearance from bridge abutments" }
+                    { value: "v-water", text: "Vertical clearance from high water mark" }
                 ]
             },
             { label: "Comments on Clearances and Measurements:", id: "clearance-comments", type: "textarea", placeholder: "Record actual measurements and note any deficiencies." }
@@ -1117,7 +1319,9 @@ const formSections: FormSectionData[] = [
                     { value: "immediate", text: "Immediate (within 24 hours)" },
                     { value: "high", text: "High (within 1 month)" },
                     { value: "medium", text: "Medium (within 6 months)" },
-                    { value: "low", text: "Low (within 1 year / next inspection cycle)" }
+                    { value: "low", text: "Low (within 1 year / next inspection cycle)" },
+                    { value: "no_recommendation", text: "No Recommendation" },
+                    { value: "tbd", text: "To be determined" }
                 ]
             },
             { label: "Summary of Recommendations / Specify \"Other\" / Timeline:", id: "recommendations-summary", type: "textarea", placeholder: "List specific, actionable recommendations." },
@@ -1184,15 +1388,8 @@ function getFormData() {
             } else {
                 const element = document.getElementById(field.id) as HTMLInputElement | HTMLSelectElement | HTMLTextAreaElement;
                 if (element) {
-                    // For conditional fields, only record if their container is visible
-                    if (field.containerId) {
-                        const container = document.getElementById(field.containerId);
-                        if (container && container.style.display !== 'none') {
-                           data[field.id] = element.value;
-                        }
-                    } else {
-                       data[field.id] = element.value;
-                    }
+                    // Always record the value, regardless of visibility.
+                    data[field.id] = element.value;
                 } else {
                     data[field.id] = '';
                 }
@@ -1239,9 +1436,16 @@ document.addEventListener('DOMContentLoaded', () => {
     const tabProcess = document.getElementById('tab-process') as HTMLButtonElement;
     const formContainer = document.getElementById('assessment-form-container') as HTMLElement;
     const processContainer = document.getElementById('process-guidelines-container') as HTMLElement;
+    
+    // Admin and API Key Elements
     const adminPasswordInput = document.getElementById('admin-password') as HTMLInputElement;
     const adminUnlockButton = document.getElementById('admin-unlock-button') as HTMLButtonElement;
-    const adminUnlockContainer = document.getElementById('admin-unlock-container') as HTMLElement;
+    const adminLockButton = document.getElementById('admin-lock-button') as HTMLButtonElement;
+    const adminLockedView = document.getElementById('admin-locked-view') as HTMLElement;
+    const adminUnlockedView = document.getElementById('admin-unlocked-view') as HTMLElement;
+    const apiKeyInput = document.getElementById('api-key-input') as HTMLInputElement;
+    const saveApiKeyButton = document.getElementById('save-api-key-button') as HTMLButtonElement;
+    const apiKeyStatus = document.querySelector('.api-key-status') as HTMLElement;
 
 
     function populateForm() {
@@ -1280,6 +1484,11 @@ document.addEventListener('DOMContentLoaded', () => {
         const pipeMaterialSelect = document.getElementById('pipe-material') as HTMLSelectElement;
         if (pipeMaterialSelect) {
             pipeMaterialSelect.addEventListener('change', handlePipeMaterialChange);
+        }
+
+        const abutmentASelect = document.getElementById('abutment-a-location') as HTMLSelectElement;
+        if (abutmentASelect) {
+            abutmentASelect.addEventListener('change', handleAbutmentAChange);
         }
 
         const addLoopButton = document.getElementById('add-expansion-loop-button');
@@ -1381,106 +1590,137 @@ document.addEventListener('DOMContentLoaded', () => {
     function populateProcessGuidelines() {
         guidelinesContainer.innerHTML = `
             <h2>Process Guidelines for Pipeline Bridge Crossing Assessment</h2>
-            <p>This document provides guidance on completing the UNITIL Natural Gas Pipeline Bridge Crossing Assessment Form. The objective is to ensure a consistent, thorough, and safe evaluation of all pipeline assets at bridge crossings.</p>
+            <p>This document establishes the standard for completing the Pipeline Bridge Crossing Assessment Form. The objective is to ensure a consistent, thorough, and safe evaluation of all pipeline assets at bridge crossings. Adherence to these guidelines is mandatory for ensuring data quality and the integrity of the assessment program.</p>
 
             <h3>General Principles</h3>
             <ul>
-                <li><strong>Safety First:</strong> Always prioritize personal and public safety. Assess traffic conditions, potential fall hazards, and environmental risks before beginning the inspection. Wear appropriate Personal Protective Equipment (PPE).</li>
-                <li><strong>Thoroughness:</strong> Complete all applicable sections of the form. Use the "Comments" fields to provide detailed descriptions, especially for any noted deficiencies or unusual conditions.</li>
-                <li><strong>Documentation:</strong> Photographs are critical. Capture images of the overall crossing, specific components (supports, coating, etc.), and any identified areas of concern. Ensure photos are well-lit and in focus.</li>
+                <li><strong>Safety:</strong> Prioritize personal and public safety at all times. Conduct a pre-work hazard assessment, evaluating traffic, fall protection requirements, and environmental conditions. Utilize all required Personal Protective Equipment (PPE).</li>
+                <li><strong>Accuracy:</strong> All data entered must be as accurate as possible. Differentiate between measured values, information from records, and estimations, using the provided options for each field.</li>
+                <li><strong>Completeness:</strong> Complete all applicable sections. Use comment fields to provide detailed explanations, especially for deficiencies, abnormal conditions, or to add context to a selection.</li>
+                <li><strong>Documentation:</strong> Photographic evidence is a critical component of the assessment. Capture high-quality images of all key components and any areas of concern.</li>
             </ul>
 
-            <h3>On-Site Assessment Walkthrough</h3>
-            <p>Follow the sections of the form in order to ensure a logical workflow.</p>
-
+            <h3>Field-by-Field Instructions</h3>
+            
             <h4>1. General Site & Crossing Information</h4>
-            <p>Establish the basic details of the assessment location.</p>
+            <p>This section captures the administrative and locational data for the assessment.</p>
             <ul>
-                <li><strong>Date and Assessor:</strong> Record the date of the inspection and the full name of the lead assessor.</li>
-                <li><strong>District Operating Center (DOC):</strong> Select the correct operating company and region. This will populate the relevant system names in Section 3.</li>
-                <li><strong>Crossing ID & Town/City:</strong> Use the official company crossing identifier if available and enter the town or city where the crossing is located.</li>
-                <li><strong>Description:</strong> The description should be concise but sufficient for another person to find the exact location (e.g., "Pipeline attached to west side of Main Street Bridge over Saco River").</li>
-                <li><strong>GPS Coordinates:</strong> Use a reliable GPS device to capture the latitude and longitude at the approximate center of the crossing.</li>
+                <li><strong>Date of Assessment:</strong> Enter the date on which the physical site inspection is performed.</li>
+                <li><strong>Assessment By:</strong> Record the full name(s) of the individual(s) conducting the assessment.</li>
+                <li><strong>District Operating Center (DOC):</strong> Select the correct operating company. This selection dictates the available systems in Section 3.</li>
+                <li><strong>Crossing Identification Number:</strong> Enter the official company-assigned identifier for the crossing (e.g., BR-123). If none exists, use a descriptive name (e.g., "Main St over Saco River").</li>
+                <li><strong>Town/City:</strong> Enter the municipality where the crossing is located.</li>
+                <li><strong>Description of Crossing/Work Location:</strong> Provide a concise but detailed text description, sufficient for an unfamiliar person to locate the asset. Include details like "pipeline on west side of bridge" or "access from north abutment".</li>
+                <li><strong>GPS Latitude / Longitude:</strong> Use a GPS device to capture the coordinates at the approximate midpoint of the pipeline crossing. Use decimal degrees format.</li>
             </ul>
 
             <h4>2. Bridge & Environmental Context</h4>
-            <p>Describe the structure and environment affecting the pipeline.</p>
+            <p>This section documents the host structure and surrounding environment, which directly impact the pipeline's condition and performance.</p>
             <ul>
-                <li><strong>Bridge Details:</strong> Record the road name, feature crossed (river, highway, etc.), and official bridge name/number if posted.</li>
-                <li><strong>Bridge Type/Material:</strong> Select the best descriptions. This context is important for understanding potential interactions between the pipe and bridge.</li>
-                <li><strong>Ambient Temperature & Weather:</strong> Record the temperature and general conditions. This is vital for understanding thermal expansion/contraction at the time of inspection.</li>
-                <li><strong>Environmental Factors:</strong> Carefully document vegetation, scour/erosion, water proximity, and debris. These can impose stress on the pipeline or impede access.</li>
+                <li><strong>Road Name:</strong> The name of the road carried by the bridge.</li>
+                <li><strong>Feature Crossed:</strong> The river, highway, railway, or other feature the bridge spans.</li>
+                <li><strong>Bridge Name / Number:</strong> Enter the official bridge name and/or number, typically found on a plaque on the bridge abutment.</li>
+                <li><strong>Bridge Type / Material:</strong> Select the best-fit options from the dropdowns. This information provides context on the bridge's expected movement and potential interaction with the pipeline.</li>
+                <li><strong>Ambient Temperature:</strong> Record the air temperature in degrees Fahrenheit (°F) at the time of the inspection. This is a critical data point for thermal stress analysis.</li>
+                <li><strong>General Weather Conditions:</strong> Describe the weather (e.g., "Sunny, 10-15 mph wind," "Overcast, light rain").</li>
+                <li><strong>Vegetation Growth:</strong> Describe any vegetation impacting or potentially impacting the pipeline, supports, or access. Note any root systems undermining supports.</li>
+                <li><strong>Evidence of Scour or Erosion:</strong> Inspect the ground around abutments and piers. Document any signs of soil being washed away, which could compromise support structures.</li>
+                <li><strong>Proximity to Water Body/Wetlands:</strong> Describe the pipeline's relationship to any water, noting if it is directly over water and its approximate height.</li>
+                <li><strong>Signs of Debris Accumulation:</strong> Note any buildup of logs, ice, trash, or other debris against the pipeline or its supports, as this can create unintended loads.</li>
             </ul>
 
             <h4>3. Pipeline Identification & Specifications</h4>
-            <p>Detail the physical characteristics of the pipeline asset.</p>
+            <p>This section details the physical and operational parameters of the pipeline itself.</p>
             <ul>
-                <li><strong>System Name & MAOP:</strong> After selecting a DOC in Section 1, choose the correct system from the dropdown. The MAOP will auto-populate. Verify this against records if possible.</li>
-                <li><strong>Pipe Details:</strong> Record the diameter, wall thickness, and material. If unknown, state "Unknown". For Wall Thickness, specify how the value was determined (e.g., measured, from records). For Pipe Material, select the appropriate option. This will reveal relevant fields like Pipe Grade (for steel) or Plastic Grade and SDR (for plastic).</li>
-                <li><strong>Installation Temperature:</strong> This is a key input for stress calculations. Use installation records if available. If not, select the appropriate source: "Assumed" or "Derived" based on historical weather data for the installation year.</li>
+                <li><strong>System Name & MAOP:</strong> After selecting a DOC, choose the correct system. The MAOP (Maximum Allowable Operating Pressure) will auto-populate.</li>
+                <li><strong>Pipe Length (ft):</strong> Enter the total length of the pipeline associated with the crossing in feet. Select the source for this information (e.g., Measured, Estimated, from records).</li>
+                <li><strong>Pipe Diameter:</strong> Select the nominal pipe diameter in inches.</li>
+                <li><strong>Wall Thickness (inches):</strong> Enter the pipe wall thickness. Crucially, select the source of this information (e.g., Measured, from records, Assumed).</li>
+                <li><strong>Comments on Wall Thickness:</strong> Use this field to add context, e.g., "Thickness measured with UT gauge at north end" or "Assumed based on standard for this vintage."</li>
+                <li><strong>Pipe Material:</strong> Select the material. This choice will display or hide the relevant fields below (Grade for steel, SDR for plastic).</li>
+                <li><strong>Pipe Grade (Steel):</strong> If steel, select the pipe grade (e.g., X52). Select the source of this information (e.g., Stamped on pipe, from records).</li>
+                <li><strong>Pipe Grade (Plastic) & SDR:</strong> If plastic, select the material grade and enter the Standard Dimension Ratio (e.g., 11, 13.5).</li>
+                <li><strong>Installation Temperature (°F):</strong> Enter the temperature at which the pipe was installed. This is a key input for engineering analysis. Select the source, noting whether it is documented or assumed.</li>
             </ul>
             
             <h4>4. Pipeline Support System</h4>
-            <p>Evaluate how the pipeline is supported across the span.</p>
+            <p>This section evaluates the structural system holding the pipeline.</p>
             <ul>
-                <li><strong>Support Method:</strong> Identify the primary method used.</li>
-                <li><strong>Comments on Condition:</strong> This is a critical section. Look for signs of stress (bending, twisting), restricted movement (seized rollers), and general degradation (corrosion, loose fasteners).</li>
+                <li><strong>Abutment A/B Location:</strong> Define the crossing's orientation. Standing at one end (Abutment A) and looking across to the other (Abutment B), determine the cardinal directions. Abutment A is the "(Left)" and B is the "(Right)" from this perspective. The form will auto-populate the opposite direction.</li>
+                <li><strong>Primary/Secondary/Tertiary Support Method:</strong> Identify all distinct support systems. The most common is Primary. Use Secondary and Tertiary for any additional, different types of supports present.</li>
+                <li><strong>Number of Supports:</strong> For each support method identified, enter the total count of that support type.</li>
+                <li><strong>Distance to nearest support (Left/Right):</strong> For a typical support within each group (Primary, Secondary, Tertiary), measure or estimate the span distance to the next support on its left and its right. Select how this value was determined (Estimated, Measured, etc.).</li>
+                <li><strong>Specify Other Support Method:</strong> If "Other" is selected in any support method dropdown, describe it here.</li>
+                <li><strong>Comments on Support Condition (Thermal Stress):</strong> Look for signs of stress, such as bent hanger rods, deformed brackets, or pipe lifting off a support saddle.</li>
+                <li><strong>Comments on Pipe Movement/Restriction:</strong> Assess if the pipe is being pinched, gripped, or otherwise prevented from moving as intended by the support design.</li>
+                <li><strong>Comments on Sliding/Roller Support Functionality:</strong> If rollers or sliding plates are present, check for seizure, debris, or lack of lubrication that would impede movement.</li>
+                <li><strong>Comments on Pipeline Support & Attachment (General):</strong> Provide a general summary of the support system's condition, noting loose fasteners, general corrosion, or other concerns.</li>
             </ul>
             
             <h4>5. Expansion/Contraction Provisions</h4>
-            <p>Assess the features designed to manage thermal movement.</p>
+            <p>This section assesses features designed to manage pipeline movement from temperature changes.</p>
             <ul>
-                <li><strong>Feature Identification:</strong> Check all features that apply. Note the quantity of each non-loop feature.</li>
-                <li><strong>Expansion Loops:</strong> If "Expansion Loop" is checked, click the "+ Add Expansion Loop" button for each loop present. For each loop, enter the center-of-elbow to center-of-elbow dimensions for all three legs in feet (ft). Select the source of the dimension information (Measured, Assumed, etc.).</li>
-                <li><strong>Functionality Comments:</strong> Determine if the features can move as intended. Is an expansion loop filled with debris? Is a joint leaking or seized?</li>
+                <li><strong>Expansion/Contraction Features:</strong> Check all features present. For items like joints or couplings, enter the quantity in the small box that appears.</li>
+                <li><strong>Expansion Loop Details:</strong> If "Expansion Loop" is checked, click "+ Add Expansion Loop" for each loop. For each, enter the three leg dimensions (center-of-fitting to center-of-fitting) in feet. Select the source for these dimensions.</li>
+                <li><strong>Specify Other Expansion Feature:</strong> If "Other" is checked, provide a description here.</li>
+                <li><strong>Comments on Expansion Feature Functionality:</strong> Evaluate if the features are working. Is a loop clear of debris? Is a slip joint seized or leaking?</li>
+                <li><strong>Comments on Expansion/Contraction Accommodation (General):</strong> Give an overall assessment of the system's ability to manage thermal movement.</li>
             </ul>
 
             <h4>6. Coating and Corrosion Control</h4>
-            <p>Examine the primary line of defense against corrosion.</p>
+            <p>This section examines the protective coating on the pipeline.</p>
             <ul>
-                <li><strong>Coating Type & Condition:</strong> Identify the coating and meticulously document any damage, holidays, disbondment, or degradation.</li>
+                <li><strong>Coating Type:</strong> Select the identified coating type.</li>
+                <li><strong>Specify Other Coating Type:</strong> If "Other" is selected, describe it here.</li>
+                <li><strong>Comments on Coating:</strong> Meticulously describe the coating's condition. Document any and all instances of holidays, disbondment, peeling, cracking, or mechanical damage.</li>
             </ul>
 
             <h4>7. Pipe Condition Assessment</h4>
-            <p>Directly inspect the pipe steel/material itself.</p>
+            <p>This section covers direct inspection of the pipe body itself.</p>
             <ul>
-                <li><strong>Physical Damage:</strong> Look for any dents, gouges, or scrapes from third-party contact or debris. Describe location and size.</li>
-                <li><strong>Atmospheric Corrosion:</strong> If pipe steel is exposed, describe the extent and severity of any atmospheric corrosion.</li>
+                <li><strong>Evidence of Physical Damage:</strong> Document any dents, gouges, scrapes, or other mechanical damage. Note the location, size, and estimated depth.</li>
+                <li><strong>Atmospheric Corrosion:</strong> For any exposed steel, describe the extent and severity of corrosion. Classify it as Light (surface rust), Moderate (pitting beginning), or Severe (flaking, section loss).</li>
             </ul>
             
             <h4>8. Clearances and Measurements</h4>
-            <p>Verify the pipeline's position relative to its surroundings.</p>
+            <p>This section verifies the pipeline's position relative to its surroundings.</p>
             <ul>
-                <li><strong>Clearance Checks:</strong> For each item, enter the measured distance and select the appropriate units (feet or inches). Note any deficiencies in the comments field.</li>
+                <li><strong>Clearances:</strong> Measure and record the distances for all applicable clearances (e.g., vertical from roadway, vertical from high water mark). Enter the value and select the correct units (ft or in).</li>
+                <li><strong>Comments on Clearances and Measurements:</strong> Note the required clearance vs. the actual measured clearance. Document any deficiencies.</li>
             </ul>
 
             <h4>9. Access and Safety</h4>
-            <p>Evaluate the safety of the site for current and future work.</p>
+            <p>This section evaluates site safety for current and future work.</p>
             <ul>
-                <li><strong>Hazards & Access:</strong> Document any immediate safety hazards. Assess the condition of any permanent access structures like ladders or walkways. Comment on the general ease or difficulty of accessing the pipeline.</li>
+                <li><strong>Safety Hazards Noted:</strong> Document any transient or permanent hazards, such as high-speed traffic, lack of fall protection, confined space entry requirements, or aggressive animals.</li>
+                <li><strong>Condition of Access Structures:</strong> If permanent ladders, platforms, or walkways exist, describe their condition (e.g., "Ladder rungs heavily corroded," "Walkway grating secure").</li>
+                <li><strong>Comments on Access & Safety:</strong> Provide a general summary of the effort and equipment required to safely access the pipeline for inspection and maintenance.</li>
             </ul>
             
             <h4>10. Documentation</h4>
-            <p>Upload the visual evidence collected during the inspection.</p>
+            <p>This section is for uploading all collected visual evidence and records.</p>
             <ul>
-                <li><strong>Photographs:</strong> Upload all relevant photos. Use the comment field for each photo to add a descriptive caption (e.g., "Upstream view of crossing," "Corrosion on support #3").</li>
-                <li><strong>Other Documents:</strong> Upload any relevant documents, such as previous inspection reports or sketches made on-site.</li>
+                <li><strong>Upload Photographs/Sketches:</strong> Upload all digital photographs. It is critical to use the comment field for each photo to provide a descriptive caption (e.g., "View from North abutment looking South," "Close-up of corrosion at support H-3," "Sketch of dent measurement on top of pipe"). Use the orientation buttons to set how the photo should appear in the final PDF report.</li>
+                <li><strong>Upload Other Documents:</strong> Upload any supporting files, such as sketches, previous reports, or relevant pages from construction drawings.</li>
             </ul>
 
             <h4>11. Third-Party Infrastructure and General Observations</h4>
-            <p>Note any other factors that could impact the pipeline.</p>
+            <p>This section documents other factors that could influence the pipeline.</p>
             <ul>
-                <li><strong>Other Utilities & Bridge Condition:</strong> Document other utilities on the bridge. Note any major defects in the bridge structure itself that could eventually affect the pipeline.</li>
-                <li><strong>Third-Party Damage:</strong> Assess the potential for future damage from vandalism, or other activities.</li>
+                <li><strong>Other Utilities or Structures:</strong> Note any other assets attached to or near the bridge (e.g., "telecom conduit 2 ft below gas line," "water main on east side of bridge").</li>
+                <li><strong>Observed Condition of Bridge Structure (General):</strong> Briefly note the general condition of the host bridge. Document any major, obvious defects like large concrete spalls, section loss on steel girders, or failing abutments.</li>
+                <li><strong>Potential for Third-Party Damage:</strong> Assess and describe any potential for future damage from traffic, mowers, vandalism, or other external forces.</li>
+                <li><strong>Comments on Third-Party Infrastructure:</strong> Provide any additional relevant comments.</li>
             </ul>
             
             <h4>12. Recommendations and Final Evaluation</h4>
-            <p>Synthesize findings into actionable recommendations.</p>
+            <p>This section synthesizes all findings into a conclusion and actionable plan.</p>
             <ul>
-                <li><strong>Immediate Hazards:</strong> Clearly list anything requiring immediate attention. Document who was notified and when.</li>
-                <li><strong>Recommendation Priority:</strong> Assign a priority level to guide maintenance scheduling. This is a critical output of the assessment.</li>
-                <li><strong>Summary of Recommendations:</strong> List clear, actionable recommendations (e.g., "Repair coating at support #3," "Clear vegetation from east abutment").</li>
-                <li><strong>Final Summary:</strong> Provide a brief, high-level summary of the overall condition of the pipeline crossing.</li>
+                <li><strong>Any Immediate Hazards Identified:</strong> Describe any condition that poses an immediate or near-term risk to the pipeline or public and requires urgent notification and action.</li>
+                <li><strong>Actions Taken/Notification Made:</strong> If an immediate hazard was found, document precisely what actions were taken on-site and who was notified (e.g., "Contacted Gas Control supervisor John Smith at 14:30").</li>
+                <li><strong>Recommendation Priority:</strong> Assign a priority level to the recommendations to guide scheduling of corrective actions.</li>
+                <li><strong>Summary of Recommendations:</strong> List clear, concise, and actionable recommendations (e.g., "1. Repair coating at support H-5. 2. Remove vegetation from north abutment.").</li>
+                <li><strong>Final Summary of Evaluation:</strong> Provide a high-level, professional summary of the crossing's overall condition, synthesizing the key findings from the entire assessment.</li>
             </ul>`;
     }
 
@@ -1631,7 +1871,7 @@ document.addEventListener('DOMContentLoaded', () => {
         handlePipeMaterialChange();
     }
     
-    function generateTextSummaryForAI(formData: { [key: string]: any }, sectionsToSummarize?: FormSectionData[]): string {
+    function generateTextSummary(formData: { [key: string]: any }, sectionsToSummarize?: FormSectionData[]): string {
         let summary = "Assessment Data Summary:\n";
         const sections = sectionsToSummarize || formSections;
 
@@ -1640,14 +1880,6 @@ document.addEventListener('DOMContentLoaded', () => {
             let sectionSummary = '';
             section.fields.forEach(field => {
                  if (field.type === 'file') return;
-
-                // Skip conditional fields that are not visible
-                if (field.containerId) {
-                    const container = document.getElementById(field.containerId);
-                    if (container && container.style.display === 'none') {
-                        return;
-                    }
-                }
                 
                 const rawValue = formData[field.id];
                 let displayValue: string | null = null;
@@ -1686,6 +1918,10 @@ document.addEventListener('DOMContentLoaded', () => {
                         if (field.id === 'system-select') {
                             const docValue = formData['doc-select'] as keyof typeof systemData;
                             currentOptions = systemData[docValue] || [];
+                        } else if (field.id === 'support-method' || field.id === 'secondary-support-method' || field.id === 'tertiary-support-method') {
+                            currentOptions = supportMethodOptions;
+                        } else if (field.id === 'abutment-a-location' || field.id === 'abutment-b-location') {
+                            currentOptions = directionOptions;
                         }
                         const selectedOption = currentOptions.find(opt => opt.value === String(rawValue));
                         displayValue = selectedOption ? selectedOption.text : String(rawValue).split('|')[0];
@@ -1742,8 +1978,6 @@ document.addEventListener('DOMContentLoaded', () => {
     }
 
     async function handleGenerateReport() {
-        const apiKey = userApiKey;
-
         const loadingOverlay = document.getElementById('loading-overlay') as HTMLElement;
         const loadingText = document.getElementById('loading-text') as HTMLElement;
         const modal = document.getElementById('summary-review-modal') as HTMLElement;
@@ -1752,37 +1986,47 @@ document.addEventListener('DOMContentLoaded', () => {
         
         const formData = getFormData();
         
-        let execSummary = "Executive Summary requires an API key. Please use the Admin unlock feature to enter one.";
-        let finalSummary = "Final Summary requires an API key. Please use the Admin unlock feature to enter one.";
+        let execSummary = "Executive Summary requires admin features to be unlocked.";
+        let finalSummary = "Final Summary requires admin features to be unlocked.";
 
-        if (apiKey) {
+        if (document.body.classList.contains('voice-enabled')) {
             loadingText.textContent = "Generating...";
             loadingOverlay.style.display = 'flex';
 
-            const fullTextSummary = generateTextSummaryForAI(formData);
+            if (!userApiKey) {
+                execSummary = "Could not generate summary: API Key is not set in the admin panel.";
+                finalSummary = "Could not generate summary: API Key is not set in the admin panel.";
+                loadingOverlay.style.display = 'none';
+            } else {
+                const fullTextSummary = generateTextSummary(formData);
+                const ai = new GoogleGenAI({ apiKey: userApiKey });
 
-            // --- AI Generation ---
-            const ai = new GoogleGenAI({ apiKey: apiKey });
+                const execSummaryPrompt = `Based on the following pipeline bridge crossing assessment data, write a detailed and comprehensive professional Executive Summary for an engineering report. Structure the summary with clear paragraphs that flow nicely, using formal, professional language. This summary should be thorough, elaborating on the overall condition, all findings from minor to high-priority, and the specific recommendations made. Where applicable, reference relevant industry standards such as 49 CFR 192 and ASME B31.8. Ensure the summary is extensive enough to provide a full overview without being overly brief. Data:\n${fullTextSummary}`;
+                const finalSummaryPrompt = `Based on the following pipeline bridge crossing assessment data, write a comprehensive "Final Summary of Evaluation". This should synthesize all key findings from the report into one or more detailed concluding paragraphs. Use formal, professional language and structure the response into well-formed paragraphs. Data:\n${fullTextSummary}`;
+                
+                try {
+                    const promises = [
+                        ai.models.generateContent({ model: 'gemini-2.5-flash', contents: execSummaryPrompt }),
+                        ai.models.generateContent({ model: 'gemini-2.5-flash', contents: finalSummaryPrompt }),
+                    ];
 
-            const execSummaryPrompt = `Based on the following pipeline bridge crossing assessment data, write a detailed and comprehensive professional Executive Summary for an engineering report. This summary should be thorough, elaborating on the overall condition, all findings from minor to high-priority, and the specific recommendations made. Ensure the summary is extensive enough to provide a full overview without being overly brief. Data:\n${fullTextSummary}`;
-            const finalSummaryPrompt = `Based on the following pipeline bridge crossing assessment data, write a comprehensive "Final Summary of Evaluation". This should synthesize all key findings from the report into a detailed concluding paragraph. Data:\n${fullTextSummary}`;
+                    const [execResult, finalResult] = await Promise.allSettled(promises);
+
+                    execSummary = (execResult.status === 'fulfilled') 
+                        ? execResult.value.text.replace(/[*#]/g, '')
+                        : `Warning: Could not connect to the generation service to generate summary. Please check the console for details.`;
             
-            const promises = [
-                ai.models.generateContent({ model: 'gemini-2.5-flash-preview-04-17', contents: execSummaryPrompt }),
-                ai.models.generateContent({ model: 'gemini-2.5-flash-preview-04-17', contents: finalSummaryPrompt }),
-            ];
-
-            const [execResult, finalResult] = await Promise.allSettled(promises);
-
-            loadingOverlay.style.display = 'none';
-
-            execSummary = (execResult.status === 'fulfilled') 
-                ? execResult.value.text 
-                : `Warning: Could not connect to the AI service to generate summary. Please check the API key or network connection.`;
-    
-            finalSummary = (finalResult.status === 'fulfilled') 
-                ? finalResult.value.text 
-                : `Warning: Could not connect to the AI service to generate summary. Please check the API key or network connection.`;
+                    finalSummary = (finalResult.status === 'fulfilled') 
+                        ? finalResult.value.text.replace(/[*#]/g, '')
+                        : `Warning: Could not connect to the generation service to generate summary. Please check the console for details.`;
+                } catch (error) {
+                     console.error("Error generating report summaries:", error);
+                     execSummary = "Error: Failed to generate executive summary.";
+                     finalSummary = "Error: Failed to generate final summary.";
+                } finally {
+                    loadingOverlay.style.display = 'none';
+                }
+            }
         }
 
         // --- Populate Modal ---
@@ -1897,11 +2141,12 @@ document.addEventListener('DOMContentLoaded', () => {
             doc.setFontSize(11);
             doc.setFont('helvetica', 'normal');
             const summaryLines = doc.splitTextToSize(execSummary, pageWidth - margin * 2);
-            const lineHeight = doc.getFontSize(); // Use font size for true single spacing
+            // Calculate line height for true single spacing based on current font size.
+            const summaryLineHeight = doc.getFontSize() / doc.internal.scaleFactor;
 
             for (const line of summaryLines) {
                 // Check if adding the next line would overflow the page
-                if (cursorY + lineHeight > pageHeight - margin) {
+                if (cursorY + summaryLineHeight > pageHeight - margin) {
                     doc.addPage();
                     cursorY = margin; // Reset cursor to top margin
 
@@ -1915,7 +2160,7 @@ document.addEventListener('DOMContentLoaded', () => {
                     doc.setFont('helvetica', 'normal');
                 }
                 doc.text(line, margin, cursorY);
-                cursorY += lineHeight; // Use single-spaced line height
+                cursorY += summaryLineHeight * 2;
             }
     
             // =================================================================
@@ -1935,7 +2180,7 @@ document.addEventListener('DOMContentLoaded', () => {
             formSections.forEach(section => {
                 allTocItems.push({ uniqueId: section.id, title: section.title, level: 0 });
                 section.fields.forEach(field => {
-                    if (field.type === 'file' || (field.containerId && document.getElementById(field.containerId)?.style.display === 'none')) {
+                    if (field.type === 'file') {
                         return;
                     }
                     if (field.type === 'clearance-group' && field.options) {
@@ -2021,7 +2266,7 @@ document.addEventListener('DOMContentLoaded', () => {
                 reportDataIds.push(section.id);
                 
                 section.fields.forEach(field => {
-                    if (field.type === 'file' || (field.containerId && document.getElementById(field.containerId)?.style.display === 'none')) return;
+                    if (field.type === 'file') return;
     
                     if (field.type === 'clearance-group' && field.options) {
                         field.options.forEach(opt => {
@@ -2051,7 +2296,13 @@ document.addEventListener('DOMContentLoaded', () => {
                     } else if (value !== undefined && value !== null && value !== '' && (!Array.isArray(value) || value.length > 0)) {
                         const rawValueString = Array.isArray(value) ? value.join(', ') : String(value);
                         if (field.type === 'select') {
-                            const options = (field.id === 'system-select') ? systemData[formData['doc-select'] as keyof typeof systemData] || [] : field.options || [];
+                            const options = (field.id === 'system-select') 
+                                ? systemData[formData['doc-select'] as keyof typeof systemData] || [] 
+                                : (field.id === 'support-method' || field.id === 'secondary-support-method' || field.id === 'tertiary-support-method')
+                                ? supportMethodOptions
+                                : (field.id === 'abutment-a-location' || field.id === 'abutment-b-location')
+                                ? directionOptions
+                                : field.options || [];
                             const selectedOption = options.find(opt => opt.value === rawValueString);
                             displayValue = selectedOption ? selectedOption.text : rawValueString.split('|')[0];
                         } else {
@@ -2138,11 +2389,18 @@ document.addEventListener('DOMContentLoaded', () => {
                 photoY += 10;
                 
                 for (const file of imageFiles) {
-                    const imgWidth = 120;
-                    const imgHeight = (imgWidth / 4) * 3;
+                    let imgWidth, imgHeight;
                     const spacing = 10;
+
+                    if (file.orientation === 'portrait') {
+                        imgWidth = 110;
+                        imgHeight = (imgWidth / 3) * 4; // ~146.67
+                    } else { // landscape or default
+                        imgWidth = 160;
+                        imgHeight = (imgWidth / 16) * 9; // 90
+                    }
+                    
                     let commentHeight = 0;
-    
                     if (file.comment) {
                         doc.setFontSize(9);
                         doc.setFont('helvetica', 'italic');
@@ -2155,8 +2413,10 @@ document.addEventListener('DOMContentLoaded', () => {
                         photoY = margin;
                     }
                     
+                    const imgX = (pageWidth - imgWidth) / 2;
+                    
                     try {
-                        doc.addImage(file.dataUrl, file.type.split('/')[1].toUpperCase(), margin, photoY, imgWidth, imgHeight);
+                        doc.addImage(file.dataUrl, file.type.split('/')[1].toUpperCase(), imgX, photoY, imgWidth, imgHeight);
                     } catch (e) {
                         console.error("Error adding image to PDF:", e);
                         doc.setFont('helvetica', 'normal').setTextColor(255, 0, 0);
@@ -2168,7 +2428,7 @@ document.addEventListener('DOMContentLoaded', () => {
                         doc.setFontSize(9);
                         doc.setFont('helvetica', 'italic');
                         const commentLines = doc.splitTextToSize(file.comment, imgWidth);
-                        doc.text(commentLines, margin, photoY + imgHeight + 4);
+                        doc.text(commentLines, imgX, photoY + imgHeight + 4);
                         doc.setFont('helvetica', 'normal');
                     }
                     
@@ -2209,139 +2469,136 @@ document.addEventListener('DOMContentLoaded', () => {
     function handleExampleAssessment() {
         const exampleData = {
             "date-of-assessment": new Date().toISOString().substring(0, 10),
-            "assessment-by": "Dana Argo",
+            "assessment-by": "Dana Argo, P.E.",
             "doc-select": "nu-nh",
-            "crossing-id": "Ocean Road Bridge",
-            "town-city": "Hampton, NH",
-            "crossing-description": "Pipeline is attached to the west side of the Ocean Road bridge, crossing the Hampton River.",
-            "gps-lat": "42.9115° N",
-            "gps-lon": "70.8123° W",
-            "road-name": "Ocean Road",
-            "feature-crossed": "Hampton River",
-            "bridge-name": "Ocean Road Bridge",
-            "bridge-number": "B-12-005",
+            "crossing-id": "BR-214 - Route 1A Bridge",
+            "town-city": "Dover, NH",
+            "crossing-description": "8-inch steel pipeline is attached to the downstream (east) side of the Route 1A bridge, spanning the Cocheco River. Access is available from the public boat launch area on the north bank.",
+            "gps-lat": "43.1959° N",
+            "gps-lon": "70.8711° W",
+            "road-name": "Route 1A / Dover Point Road",
+            "feature-crossed": "Cocheco River",
+            "bridge-name": "General Sullivan Bridge",
+            "bridge-number": "105/095",
             "bridge-type": "girder",
             "bridge-material": "steel",
-            "ambient-temp": "68",
-            "weather-conditions": "Clear and sunny, light breeze from the west.",
-            "vegetation-growth": "Minor grass and weeds observed at the north abutment, well clear of supports.",
-            "scour-erosion": "No significant scour was observed. Riverbed appears stable around piers.",
-            "proximity-water": "Pipeline is approximately 20 feet above the mean high water mark.",
-            "debris-accumulation": "No debris was found on or around pipeline supports.",
-            "system-select": "Hampton IP|45 PSIG",
-            "maop": "45 PSIG",
+            "ambient-temp": "72",
+            "weather-conditions": "Partly cloudy, 72°F with a light 5 mph wind from the southwest. Conditions were dry and safe for inspection.",
+            "vegetation-growth": "Minor vegetation and grass growth was observed at both the north and south abutments. All growth is well clear of the pipeline and support structures and does not impede access or visual inspection.",
+            "scour-erosion": "No evidence of significant scour or erosion was observed at the visible portions of the bridge piers or abutments. The river banks appear stable.",
+            "proximity-water": "The pipeline is approximately 25 feet above the mean high water mark.",
+            "debris-accumulation": "A small amount of driftwood was observed near the base of the central pier, but it is not in contact with or posing a threat to the bridge structure or pipeline.",
+            "system-select": "Dover IP|55 PSIG",
+            "maop": "55 PSIG",
+            "pipe-length": "450",
+            "pipe-length-assessment": "Measured from map",
             "pipe-diameter": "8",
             "wall-thickness": "0.322",
             "wall-thickness-assessment": "Obtained from records",
-            "wall-thickness-comments": "Wall thickness confirmed from original construction drawings dated 1982.",
+            "wall-thickness-comments": "Wall thickness was obtained from original installation records and spot-checked with a UT gauge at the north abutment. Readings were consistent with records.",
             "pipe-material": "steel",
-            "pipe-grade": "x52",
-            "pipe-grade-assessment": "Stamped on pipe",
+            "pipe-grade": "x42",
+            "pipe-grade-assessment": "From records",
             "plastic-pipe-grade": "",
             "pipe-sdr": "",
-            "installation-temp": "60",
-            "installation-temp-assessment": "Assumed",
+            "installation-temp": "65",
+            "installation-temp-assessment": "Documented in Original Installation Records",
+            "abutment-a-location": "north",
+            "abutment-b-location": "south",
             "support-method": "hangers",
+            "primary-support-count": "24",
+            "primary-support-dist-left": "15.5",
+            "primary-support-dist-left-assessment": "Measured",
+            "primary-support-dist-right": "15.5",
+            "primary-support-dist-right-assessment": "Measured",
+            "secondary-support-method": "rollers",
+            "secondary-support-count": "2",
+            "secondary-support-dist-left": "0.5",
+            "secondary-support-dist-left-assessment": "Measured",
+            "secondary-support-dist-right": "15.5",
+            "secondary-support-dist-right-assessment": "Measured",
+            "tertiary-support-method": "",
+            "tertiary-support-count": "",
+            "tertiary-support-dist-left": "",
+            "tertiary-support-dist-left-assessment": "Estimated",
+            "tertiary-support-dist-right": "",
+            "tertiary-support-dist-right-assessment": "Estimated",
             "other-support-specify": "",
-            "support-condition-thermal-stress-comments": "No signs of thermal stress. Hangers appear to be in good condition.",
-            "pipe-movement-at-supports-comments": "Pipe appears to be adequately supported with no undue restrictions.",
-            "sliding-roller-functionality-comments": "N/A",
-            "support-comments": "All U-bolts and fasteners are tight. No significant corrosion noted on supports.",
-            "expansion-feature": { "expansion_loop": 1, "pipe_flexibility": 1 },
-            "expansion_loops": [
-                { "leg1": "10", "leg2": "20", "leg3": "10", "source": "Measured" }
-            ],
+            "support-condition-thermal-stress-comments": "No signs of significant thermal stress. Hangers appear to be in good condition, allowing for movement.",
+            "pipe-movement-at-supports-comments": "Pipe appears to be adequately supported with no undue restrictions from the primary hanger supports.",
+            "sliding-roller-functionality-comments": "The two roller supports at the north and south abutments show signs of stiffness. They are not seized, but movement appears partially restricted. Recommend cleaning and lubrication.",
+            "support-comments": "All U-bolts and fasteners are tight. Minor surface corrosion noted on several nuts, but no section loss observed. Overall condition is satisfactory.",
+            "expansion-feature": { "pipe_flexibility": 1 },
+            "expansion_loops": [],
             "other-expansion-specify": "",
-            "expansion-feature-functionality-comments": "The expansion loop appears clear and unobstructed. The long, sweeping bend on the north approach also provides adequate thermal expansion capability.",
-            "expansion-comments": "Overall accommodation for thermal movement is satisfactory.",
+            "expansion-feature-functionality-comments": "The crossing relies on designed flexibility, incorporating several long-radius bends on the approaches, to accommodate thermal expansion and contraction. There are no signs of restraint or excessive stress at these bends.",
+            "expansion-comments": "The method for accommodating thermal movement appears to be functioning as designed.",
             "coating-type": "fusion-bonded-epoxy",
             "other-coating-type-specify": "",
-            "coating-comments": "Coating is in excellent condition. No holidays or damage found during visual inspection.",
-            "pipe-physical-damage": "No physical damage was observed on the pipeline.",
-            "atmospheric-corrosion-details": "No atmospheric corrosion was observed.",
-            "clearance-group-v-hwy-value": "18.5",
+            "coating-comments": "Coating is generally in good condition. A 2-inch scratch with minor surface rust was identified on the top of the pipe at support H-12. No other holidays or damage found during the visual inspection.",
+            "pipe-physical-damage": "No physical damage (dents, gouges) was observed on the pipeline.",
+            "atmospheric-corrosion-details": "Minor surface rust noted on the scratch at H-12. No other atmospheric corrosion was observed on the pipe body.",
+            "clearance-group-v-hwy-value": "25",
             "clearance-group-v-hwy-units": "ft",
-            "clearance-group-h-hwy-value": "12",
+            "clearance-group-h-hwy-value": "",
             "clearance-group-h-hwy-units": "ft",
-            "clearance-group-v-water-value": "22",
+            "clearance-group-v-water-value": "25",
             "clearance-group-v-water-units": "ft",
-            "clearance-group-h-abutment-value": "60",
-            "clearance-group-h-abutment-units": "in",
             "clearance-comments": "All clearances meet or exceed requirements.",
-            "safety-hazards": "Moderate vehicle traffic on the bridge deck. No fall protection railings on the west side where the pipe is located.",
+            "safety-hazards": "High-volume, high-speed vehicle traffic on the bridge deck. Work requires fall protection equipment and certified traffic control.",
             "access-structures-condition": "N/A - no permanent access structures.",
-            "access-safety-comments": "Access requires lane closure and fall protection equipment.",
-            "other-utilities-bridge": "A conduit for telecommunications is also attached to the west side, approximately 3 feet below the gas line.",
-            "bridge-structure-condition": "The bridge structure appears to be in good condition with no major spalling or rust noted.",
-            "third-party-damage-potential": "Low potential for third-party damage due to pipeline elevation.",
-            "third-party-comments": "Telecom conduit is well-secured.",
+            "access-safety-comments": "Access for future maintenance will require a snooper truck or under-bridge rigging, in addition to lane closures.",
+            "other-utilities-bridge": "A conduit for telecommunications is also attached to the east side, approximately 4 feet below the gas line.",
+            "bridge-structure-condition": "The bridge's concrete deck and steel girders appear to be in fair condition. Some minor spalling was noted on the south abutment wall, but it does not appear to affect the pipeline supports.",
+            "third-party-damage-potential": "Low potential for third-party damage due to the pipeline's elevation and position away from the roadway.",
+            "third-party-comments": "The adjacent telecom conduit is well-secured and poses no immediate threat.",
             "immediate-hazards": "None identified.",
             "actions-taken-hazards": "N/A",
-            "recommendation-priority": "low",
-            "recommendations-summary": "Recommend standard monitoring per inspection schedule. No immediate actions required.",
-            "final-summary-evaluation": "The pipeline at this crossing is in excellent condition with no immediate concerns. The support system, coating, and cathodic protection are all functioning as intended. The primary recommendation is to continue routine inspections.",
+            "recommendation-priority": "medium",
+            "recommendations-summary": "1. Clean and lubricate the two roller supports at the north and south abutments.\n2. At support H-12, mechanically clean the 2-inch scratch to bare metal and apply a compatible repair coating.\n3. Continue monitoring on the standard inspection cycle.",
+            "final-summary-evaluation": "The pipeline at this crossing is in generally good condition and fit for service. The primary support hangers are secure, and clearances are adequate. Two minor maintenance items were identified: stiff roller supports and a small coating scratch requiring repair. These items have been assigned a medium priority for resolution to ensure the long-term integrity of the crossing. No immediate hazards were identified.",
             "fileData": {
                 "photographs": [
-                    { "name": "Upstream_View.jpg", "comment": "Photo taken from the north bank looking downstream.", "dataUrl": "data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mNkYAAAAAYAAjCB0C8AAAAASUVORK5CYII=", "type": "image/jpeg" },
-                    { "name": "Support_Hanger_3.jpg", "comment": "Close-up of the third support hanger from the east abutment.", "dataUrl": "data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mNkYAAAAAYAAjCB0C8AAAAASUVORK5CYII=", "type": "image/jpeg" }
+                    { "name": "View_from_North_Abutment.jpg", "comment": "Photo taken from the north abutment looking south along the pipeline.", "dataUrl": "data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mNkYAAAAAYAAjCB0C8AAAAASUVORK5CYII=", "type": "image/jpeg", "orientation": "landscape" },
+                    { "name": "Coating_Scratch_H12.jpg", "comment": "Close-up of the coating scratch identified at support H-12.", "dataUrl": "data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mNkYAAAAAYAAjCB0C8AAAAASUVORK5CYII=", "type": "image/jpeg", "orientation": "portrait" },
+                    { "name": "South_Roller_Support.jpg", "comment": "View of the roller support at the south abutment, showing signs of stiffness.", "dataUrl": "data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mNkYAAAAAYAAjCB0C8AAAAASUVORK5CYII=", "type": "image/jpeg", "orientation": "landscape" }
                 ],
-                "other-docs": [
-                    { "name": "Installation_Sketch_1982.png", "comment": "Original installation sketch.", "dataUrl": "data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mNkYAAAAAYAAjCB0C8AAAAASUVORK5CYII=", "type": "image/png" }
-                ]
+                "other-docs": []
             }
         };
         populateFormWithData(exampleData);
     }
     
+    function updateApiKeyStatus() {
+        if (!apiKeyStatus) return;
+        if (userApiKey) {
+            apiKeyStatus.textContent = '✓ Key Saved';
+            apiKeyStatus.style.color = '#28a745';
+        } else {
+            apiKeyStatus.textContent = '✗ No Key Set';
+            apiKeyStatus.style.color = '#dc3545';
+        }
+    }
+
+    function handleAdminLock() {
+        document.body.classList.remove('voice-enabled');
+        adminUnlockedView.style.display = 'none';
+        adminLockedView.style.display = 'flex';
+        adminPasswordInput.value = '';
+        if (apiKeyInput) {
+            apiKeyInput.value = ''; // Clear for security
+        }
+    }
+
     function handleAdminUnlock() {
         const password = adminPasswordInput.value;
         if (password === "0665") {
             document.body.classList.add('voice-enabled');
-            adminUnlockContainer.innerHTML = ''; // Clear password input and button
-
-            const apiKeyLabel = document.createElement('label');
-            apiKeyLabel.htmlFor = 'api-key-input';
-            apiKeyLabel.textContent = 'API Key:';
-            
-            const apiKeyInput = document.createElement('input');
-            apiKeyInput.type = 'password';
-            apiKeyInput.id = 'api-key-input';
-            apiKeyInput.placeholder = 'Enter Google AI API Key';
-            if (userApiKey) {
-                apiKeyInput.value = userApiKey;
+            adminLockedView.style.display = 'none';
+            adminUnlockedView.style.display = 'flex';
+            if (apiKeyInput && userApiKey) {
+                apiKeyInput.value = userApiKey; // Show saved key on unlock
             }
-
-            const saveButton = document.createElement('button');
-            saveButton.type = 'button';
-            saveButton.id = 'save-api-key-button';
-            saveButton.textContent = 'Save';
-            
-            const statusSpan = document.createElement('span');
-            statusSpan.id = 'api-key-status';
-            statusSpan.className = 'api-key-status';
-            
-            const updateStatus = () => {
-                if (userApiKey) {
-                    statusSpan.textContent = '✓ Saved';
-                    statusSpan.style.color = '#28a745';
-                } else {
-                    statusSpan.textContent = '✗ Not set';
-                    statusSpan.style.color = '#dc3545';
-                }
-            };
-            
-            saveButton.addEventListener('click', () => {
-                userApiKey = apiKeyInput.value.trim();
-                updateStatus();
-                alert(userApiKey ? 'API Key saved successfully.' : 'API Key removed.');
-            });
-
-            adminUnlockContainer.appendChild(apiKeyLabel);
-            adminUnlockContainer.appendChild(apiKeyInput);
-            adminUnlockContainer.appendChild(saveButton);
-            adminUnlockContainer.appendChild(statusSpan);
-            updateStatus();
-
         } else {
             adminPasswordInput.style.borderColor = 'red';
             adminPasswordInput.value = '';
@@ -2362,10 +2619,25 @@ document.addEventListener('DOMContentLoaded', () => {
     exampleButton.addEventListener('click', handleExampleAssessment);
     
     adminUnlockButton.addEventListener('click', handleAdminUnlock);
+    adminLockButton.addEventListener('click', handleAdminLock);
     adminPasswordInput.addEventListener('keypress', (e) => {
         if (e.key === 'Enter') {
             handleAdminUnlock();
         }
+    });
+
+    saveApiKeyButton.addEventListener('click', () => {
+        const key = apiKeyInput.value.trim();
+        if (key) {
+            userApiKey = key;
+            localStorage.setItem('googleApiKey', key);
+            alert('API Key saved successfully.');
+        } else {
+            userApiKey = null;
+            localStorage.removeItem('googleApiKey');
+            alert('API Key removed.');
+        }
+        updateApiKeyStatus();
     });
 
     tabForm.addEventListener('click', () => {
@@ -2390,4 +2662,8 @@ document.addEventListener('DOMContentLoaded', () => {
     populateProcessGuidelines();
     handleDocChange(); // Initial call to set up the system select container correctly
     handlePipeMaterialChange(); // Initial call to set up conditional pipe fields
+
+    // Load API Key from local storage on startup
+    userApiKey = localStorage.getItem('googleApiKey');
+    updateApiKeyStatus();
 });
