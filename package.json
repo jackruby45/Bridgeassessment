@@ -1,5 +1,5 @@
 {
-  "name": "50-pipeline-bridge-crossing-assessment-form",
+  "name": "35-pipeline-bridge-crossing-assessment-form",
   "private": true,
   "version": "0.0.0",
   "type": "module",
@@ -9,7 +9,7 @@
     "preview": "vite preview"
   },
   "dependencies": {
-    "@google/genai": "^1.7.0"
+    "@google/genai": "^1.9.0"
   },
   "devDependencies": {
     "@types/node": "^22.14.0",

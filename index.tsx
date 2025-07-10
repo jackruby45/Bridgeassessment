@@ -1,6 +1,4 @@
 // index.tsx
-import { GoogleGenAI, GenerateContentResponse } from "@google/genai";
-
 // Extend the global Window interface to include jsPDF and SpeechRecognition
 declare global {
     interface Window {
@@ -51,6 +49,15 @@ interface ExpansionLoopData {
     source: string;
 }
 
+// Interface for code reference data structure
+interface CodeReference {
+    id: string;
+    citation: string;
+    title: string;
+    text: string;
+    condition: (formData: { [key: string]: any }) => boolean;
+}
+
 // List of field IDs that should have voice-to-text enabled
 const voiceEnabledFieldIds = [
     'crossing-description', 'weather-conditions', 'vegetation-growth', 'scour-erosion',
@@ -65,6 +72,41 @@ const voiceEnabledFieldIds = [
     'immediate-hazards', 'actions-taken-hazards', 'recommendations-summary',
     'final-summary-evaluation', 'modal-exec-summary', 'modal-final-summary',
     'wall-thickness-comments' // Added new comment field
+];
+
+// Data store for applicable codes and standards
+const applicableCodes: CodeReference[] = [
+    {
+        id: 'bridge_installation',
+        citation: 'ASME B31.8, Paragraph 841.1.8',
+        title: 'Pipelines on Bridges',
+        text: `Pipelines on bridges shall be designed to withstand the forces resulting from internal pressure, temperature changes, the weight of the pipe and its contents, and other dynamic loads such as wind or vibrations from the bridge structure. The design must ensure that the pipeline does not apply excessive forces or moments to the bridge members. Pipe supports shall be designed to prevent excessive friction, provide insulation where necessary, and allow for thermal expansion and contraction without creating undue stress on the pipe or the bridge.`,
+        condition: () => true // Always applicable for this form
+    },
+    {
+        id: 'atmospheric_corrosion',
+        citation: '49 CFR § 192.479',
+        title: 'Atmospheric corrosion control: General',
+        text: `(a) Each operator must clean and coat each pipeline or portion of pipeline that is exposed to the atmosphere, except pipelines under paragraph (c) of this section. (b) Coating material must be suitable for the prevention of atmospheric corrosion. (c) Except portions of pipelines in offshore splash zones, maintenance of separate lengths of pipe with a combined total of less than 100 feet (30 meters) in any 1-mile (1.6 kilometers) of pipeline need not be performed, unless the operator determines that the maintenance is needed for the safe operation of the pipeline.`,
+        condition: (formData) => !!formData['atmospheric-corrosion-details'] || !!formData['coating-comments']
+    },
+    {
+        id: 'pipe_supports',
+        citation: 'ASME B31.8, Paragraph 835.4',
+        title: 'Supports, Braces, and Anchors',
+        text: `Supports for pipelines shall be designed to support the pipe without causing excessive local stresses in the pipe. Where pipelines are subjected to expansion and contraction, supports shall be designed to accommodate the resulting movement. Bracing shall be designed to resist forces such as wind, thermal expansion, and hydrostatic testing. All attachments to the pipe shall be designed to minimize the stress concentrations on the pipe wall.`,
+        condition: (formData) => !!formData['support-condition-thermal-stress-comments'] || !!formData['pipe-movement-at-supports-comments'] || !!formData['sliding-roller-functionality-comments'] || !!formData['support-comments']
+    },
+    {
+        id: 'expansion_flexibility',
+        citation: 'ASME B31.8, Paragraph 832.1',
+        title: 'Expansion and Flexibility - General',
+        text: `Pipelines shall be designed with sufficient flexibility to prevent thermal expansion or contraction from causing excessive stresses in the piping material, excessive bending and unusual loads at joints, or undesirable forces and moments at points of connection to equipment or at anchorage or guide points. Formal analysis of adequate flexibility is required for systems that experience a temperature change greater than 100°F (56°C) or for systems that are judged to be critical by the operating company.`,
+        condition: (formData) => {
+            const features = formData['expansion-feature'];
+            return (features && Object.keys(features).length > 0 && !features.none) || !!formData['expansion-feature-functionality-comments'];
+        }
+    }
 ];
 
 
@@ -196,17 +238,34 @@ function addImproveButton(wrapper: HTMLElement, inputElement: HTMLTextAreaElemen
         }
         
         try {
-            const ai = new GoogleGenAI({apiKey: process.env.API_KEY});
-            const prompt = `Rewrite the following text for a professional engineering field report. Your response must be in a JSON array format containing 3 distinct alternative versions, like ["suggestion 1", "suggestion 2", "suggestion 3"]. For each suggestion, use well-structured paragraphs and professional, formal language appropriate for an engineering document. Improve clarity, grammar, and sentence structure, while preserving all original facts and the core meaning. Do not add any new information. Original text: "${originalText}"`;
+            const prompt = `Rewrite the following text for a professional engineering field report. Provide 3 distinct alternative versions. Improve clarity, grammar, and sentence structure, while preserving all original facts and the core meaning. Do not add any new information. Return ONLY a valid JSON array of strings, where each string is a rewritten version. For example: ["Rewritten text 1.", "Rewritten text 2.", "Rewritten text 3."]. Do not include any introductory text or markdown formatting. Original text: "${originalText}"`;
             
-            const response: GenerateContentResponse = await ai.models.generateContent({
-                model: 'gemini-2.5-flash',
-                contents: prompt,
-                config: { responseMimeType: "application/json" }
+            const response = await fetch('/api/generate', {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({ prompt }),
             });
+
+            if (!response.ok || !response.body) {
+                const errorText = response.statusText || 'API request failed';
+                throw new Error(errorText);
+            }
             
+            const reader = response.body.getReader();
+            const decoder = new TextDecoder();
+            let resultText = '';
+
+            while (true) {
+                const { done, value } = await reader.read();
+                if (done) {
+                    break;
+                }
+                resultText += decoder.decode(value, { stream: true });
+                improveButton.textContent = `Receiving...`;
+            }
+
             let suggestions: string[] = [];
-            let jsonStr = response.text.trim();
+            let jsonStr = resultText.trim();
             const fenceRegex = /^```(\w*)?\s*\n?(.*?)\n?\s*```$/s;
             const match = jsonStr.match(fenceRegex);
             if (match && match[2]) {
@@ -218,10 +277,10 @@ function addImproveButton(wrapper: HTMLElement, inputElement: HTMLTextAreaElemen
                 if (Array.isArray(parsedData) && parsedData.every(item => typeof item === 'string')) {
                     suggestions = parsedData;
                 } else {
-                    suggestions = [response.text];
+                    suggestions = [resultText];
                 }
             } catch (e) {
-                suggestions = [response.text]; 
+                suggestions = [resultText]; 
             }
 
             if (suggestions.length === 0) {
@@ -268,7 +327,7 @@ function addImproveButton(wrapper: HTMLElement, inputElement: HTMLTextAreaElemen
 
         } catch (error) {
             console.error("Error improving text:", error);
-            alert("Could not retrieve suggestions. Please check the console for more details.");
+            alert(`Could not retrieve suggestions. Please check the console for more details. Error: ${error instanceof Error ? error.message : String(error)}`);
         } finally {
             improveButton.disabled = false;
             improveButton.textContent = 'Improve';
@@ -1929,32 +1988,76 @@ document.addEventListener('DOMContentLoaded', () => {
         let finalSummary = "Final Summary requires admin features to be unlocked.";
 
         if (document.body.classList.contains('voice-enabled')) {
-            loadingText.textContent = "Generating...";
+            loadingText.textContent = "Generating summaries...";
             loadingOverlay.style.display = 'flex';
 
+            execSummaryTextarea.value = '';
+            finalSummaryTextarea.value = '';
+
             const fullTextSummary = generateTextSummary(formData);
-
-            // --- Summary Generation ---
-            const ai = new GoogleGenAI({ apiKey: process.env.API_KEY });
-
-            const execSummaryPrompt = `Based on the following pipeline bridge crossing assessment data, write a detailed and comprehensive professional Executive Summary for an engineering report. Structure the summary with clear paragraphs that flow nicely, using formal, professional language. This summary should be thorough, elaborating on the overall condition, all findings from minor to high-priority, and the specific recommendations made. Where applicable, reference relevant industry standards such as 49 CFR 192 and ASME B31.8. Ensure the summary is extensive enough to provide a full overview without being overly brief. Data:\n${fullTextSummary}`;
-            const finalSummaryPrompt = `Based on the following pipeline bridge crossing assessment data, write a comprehensive "Final Summary of Evaluation". This should synthesize all key findings from the report into one or more detailed concluding paragraphs. Use formal, professional language and structure the response into well-formed paragraphs. Data:\n${fullTextSummary}`;
             
+            const codesToInclude = applicableCodes.filter(code => code.condition(formData));
+            let applicableCodesText = "";
+            if (codesToInclude.length > 0) {
+                applicableCodesText += "\n\n--- Applicable Codes for Reference ---\n";
+                applicableCodesText += "When generating the text, you MUST integrate and reference the following applicable codes where relevant to the findings. Explain how the findings relate to the principles in these codes. Do not just list the codes; weave them into the narrative naturally.\n\n";
+                codesToInclude.forEach(code => {
+                    applicableCodesText += `Citation: ${code.citation} (${code.title})\nText: "${code.text}"\n\n`;
+                });
+            }
+
+            const prompt = `Based on the following pipeline bridge crossing assessment data, generate two summaries for an engineering report: an "executiveSummary" and a "finalSummary". The executive summary should be a detailed and comprehensive professional overview. The "Final Summary of Evaluation" should synthesize all key findings into one or more detailed concluding paragraphs. When applicable, integrate and reference the provided industry standards naturally within the narrative. Use formal, professional language. Return ONLY a single, valid JSON object with two keys: "executiveSummary" and "finalSummary". Do not include any introductory text, explanations, or markdown formatting. Data:\n${fullTextSummary}${applicableCodesText}`;
+            
+            let fullResponseText = '';
             try {
-                const promises = [
-                    ai.models.generateContent({ model: 'gemini-2.5-flash', contents: execSummaryPrompt }),
-                    ai.models.generateContent({ model: 'gemini-2.5-flash', contents: finalSummaryPrompt }),
-                ];
+                const response = await fetch('/api/generate', {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({ prompt }),
+                });
 
-                const [execResult, finalResult] = await Promise.allSettled(promises);
+                if (!response.ok || !response.body) {
+                    throw new Error(`API error: ${response.statusText}`);
+                }
 
-                execSummary = (execResult.status === 'fulfilled') 
-                    ? execResult.value.text.replace(/[*#]/g, '')
-                    : `Warning: Could not connect to the generation service to generate summary. Please check the console for details.`;
-        
-                finalSummary = (finalResult.status === 'fulfilled') 
-                    ? finalResult.value.text.replace(/[*#]/g, '')
-                    : `Warning: Could not connect to the generation service to generate summary. Please check the console for details.`;
+                const reader = response.body.getReader();
+                const decoder = new TextDecoder();
+
+                while (true) {
+                    const { done, value } = await reader.read();
+                    if (done) {
+                        break;
+                    }
+                    const chunk = decoder.decode(value, { stream: true });
+                    fullResponseText += chunk;
+                    
+                    // Provide live feedback by streaming raw response into one textarea
+                    execSummaryTextarea.value += chunk;
+                    autoResizeTextarea(execSummaryTextarea);
+                }
+
+                // Once streaming is complete, parse the full JSON and populate correctly
+                let parsedSummaries = { executiveSummary: '', finalSummary: '' };
+                try {
+                    // Clean up markdown fences if they exist
+                    let jsonStr = fullResponseText.trim();
+                    const fenceRegex = /^```(\w*)?\s*\n?(.*?)\n?\s*```$/s;
+                    const match = jsonStr.match(fenceRegex);
+                    if (match && match[2]) {
+                      jsonStr = match[2].trim();
+                    }
+                    parsedSummaries = JSON.parse(jsonStr);
+                } catch (e) {
+                    console.error("Failed to parse streamed JSON for report:", e);
+                    // Fallback: Use the raw text if parsing fails
+                    parsedSummaries.executiveSummary = fullResponseText;
+                    parsedSummaries.finalSummary = "Could not parse final summary from AI response. The raw response is in the executive summary field.";
+                }
+
+                execSummary = parsedSummaries.executiveSummary || "No executive summary was generated.";
+                finalSummary = parsedSummaries.finalSummary || "No final summary was generated.";
+
+
             } catch (error) {
                  console.error("Error generating report summaries:", error);
                  execSummary = "Error: Failed to generate executive summary.";
@@ -1975,8 +2078,13 @@ document.addEventListener('DOMContentLoaded', () => {
         
         // Add improve buttons if admin
         if (document.body.classList.contains('voice-enabled')) {
-            addImproveButton(document.getElementById('modal-exec-summary-wrapper')!, execSummaryTextarea);
-            addImproveButton(document.getElementById('modal-final-summary-wrapper')!, finalSummaryTextarea);
+            const execWrapper = document.getElementById('modal-exec-summary-wrapper')!;
+            const finalWrapper = document.getElementById('modal-final-summary-wrapper')!;
+            // Clear old buttons before adding new ones
+            execWrapper.querySelectorAll('.improve-button').forEach(b => b.remove());
+            finalWrapper.querySelectorAll('.improve-button').forEach(b => b.remove());
+            addImproveButton(execWrapper, execSummaryTextarea);
+            addImproveButton(finalWrapper, finalSummaryTextarea);
         }
 
         const modalGeneratePdfButton = document.getElementById('modal-generate-pdf-button')!;
@@ -2137,6 +2245,12 @@ document.addEventListener('DOMContentLoaded', () => {
                  formData.expansion_loops.forEach((loop: ExpansionLoopData, index: number) => {
                      allTocItems.push({ uniqueId: `expansion_loop_${index}`, title: `Expansion Loop #${index + 1}`, level: 1 });
                  });
+            }
+
+            // Add Applicable Codes to ToC if needed
+            const codesToInclude = applicableCodes.filter(code => code.condition(formData));
+            if (codesToInclude.length > 0) {
+                allTocItems.push({ uniqueId: 'codes_and_standards_section', title: 'Applicable Codes and Standards', level: 0 });
             }
 
             const imageFiles = [...(fileDataStore['photographs'] || []), ...(fileDataStore['other-docs'] || [])]
@@ -2303,6 +2417,54 @@ document.addEventListener('DOMContentLoaded', () => {
                     }
                 },
             });
+            
+            // =================================================================
+            // APPLICABLE CODES AND STANDARDS
+            // =================================================================
+            if (codesToInclude.length > 0) {
+                doc.addPage();
+                let codesY = margin;
+                const codesStartPage = doc.internal.getCurrentPageInfo().pageNumber;
+                const codesEntry = tocMap.get('codes_and_standards_section');
+                if (codesEntry) {
+                    codesEntry.contentPage = codesStartPage;
+                }
+
+                doc.setFontSize(16);
+                doc.setFont('helvetica', 'bold');
+                doc.text('Applicable Codes and Standards', margin, codesY);
+                codesY += 15;
+                
+                codesToInclude.forEach(code => {
+                    const titleText = `${code.citation}: ${code.title}`;
+                    
+                    // Use a temporary font setting to calculate height accurately
+                    doc.setFont('helvetica', 'bold');
+                    doc.setFontSize(12);
+                    const titleHeight = doc.getTextDimensions(titleText, { maxWidth: pageWidth - margin * 2 }).h;
+
+                    doc.setFont('helvetica', 'italic');
+                    doc.setFontSize(11);
+                    const bodyLines = doc.splitTextToSize(code.text, pageWidth - margin * 2);
+                    const bodyHeight = (bodyLines.length * (doc.getFontSize() / doc.internal.scaleFactor) * 1.15); 
+                    const sectionSpacing = 12;
+
+                    if (codesY + titleHeight + bodyHeight + sectionSpacing > pageHeight - margin) {
+                        doc.addPage();
+                        codesY = margin;
+                    }
+
+                    doc.setFontSize(12);
+                    doc.setFont('helvetica', 'bold');
+                    doc.text(titleText, margin, codesY, { maxWidth: pageWidth - margin * 2 });
+                    codesY += titleHeight + 2;
+
+                    doc.setFontSize(11);
+                    doc.setFont('helvetica', 'italic');
+                    doc.text(bodyLines, margin, codesY);
+                    codesY += bodyHeight + sectionSpacing;
+                });
+            }
     
             // =================================================================
             // PHOTOGRAPHS
@@ -2560,3 +2722,5 @@ document.addEventListener('DOMContentLoaded', () => {
     handleDocChange(); // Initial call to set up the system select container correctly
     handlePipeMaterialChange(); // Initial call to set up conditional pipe fields
 });
+
+export {};
