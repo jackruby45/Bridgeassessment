@@ -1,5 +1,6 @@
+
 // index.tsx
-import { GoogleGenAI, GenerateContentResponse } from "@google/genai";
+import { GoogleGenAI, GenerateContentResponse, Chat } from "@google/genai";
 
 // Extend the global Window interface to include jsPDF and SpeechRecognition
 declare global {
@@ -52,8 +53,27 @@ interface ExpansionLoopData {
     source: string;
 }
 
+// --- Helper to get image dimensions ---
+const getImageDimensions = (dataUrl: string): Promise<{ width: number; height: number }> => {
+    return new Promise((resolve) => {
+        const img = new Image();
+        img.onload = () => {
+            resolve({ width: img.width, height: img.height });
+        };
+        img.onerror = (err) => {
+            console.error("Failed to load image for dimension calculation:", err);
+            // Fallback for failed loads, e.g., corrupted data URL.
+            // Using a standard 4:3 aspect ratio as a guess.
+            resolve({ width: 800, height: 600 });
+        };
+        img.src = dataUrl;
+    });
+};
+
 // --- Global variable for user-provided API key ---
 let userApiKey: string | null = null;
+let interviewChat: Chat | null = null;
+let interviewHistory: { role: 'user' | 'model', text: string }[] = [];
 
 
 // List of field IDs that should have voice-to-text enabled
@@ -1431,6 +1451,7 @@ document.addEventListener('DOMContentLoaded', () => {
     const openButton = document.getElementById('open-assessment-button') as HTMLButtonElement;
     const openFileInput = document.getElementById('open-file-input') as HTMLInputElement;
     const generateReportButton = document.getElementById('generate-report-button') as HTMLButtonElement;
+    const generatePaperFormButton = document.getElementById('generate-paper-form-button') as HTMLButtonElement;
     const exampleButton = document.getElementById('example-assessment-button') as HTMLButtonElement;
     const tabForm = document.getElementById('tab-form') as HTMLButtonElement;
     const tabProcess = document.getElementById('tab-process') as HTMLButtonElement;
@@ -1978,70 +1999,185 @@ document.addEventListener('DOMContentLoaded', () => {
     }
 
     async function handleGenerateReport() {
+        if (!document.body.classList.contains('voice-enabled') || !userApiKey) {
+            showSummaryReviewModal(
+                getFormData(), 
+                "Could not generate summary: Admin features must be unlocked and an API Key set.", 
+                "Could not generate summary: Admin features must be unlocked and an API Key set."
+            );
+            return;
+        }
+        await startInterview(getFormData());
+    }
+
+    async function startInterview(formData: { [key: string]: any }) {
+        const modal = document.getElementById('ai-interview-modal')!;
+        const questionArea = document.getElementById('ai-question-area')!;
+        const answerInput = document.getElementById('user-answer-input') as HTMLTextAreaElement;
+        const submitButton = document.getElementById('submit-answer-button') as HTMLButtonElement;
+        const skipButton = document.getElementById('skip-interview-button') as HTMLButtonElement;
+
+        // Reset state from any previous run
+        interviewChat = null;
+        interviewHistory = [];
+        answerInput.value = '';
+        modal.style.display = 'flex';
+        questionArea.innerHTML = `<div class="spinner-container"><div class="spinner"></div><p>Analyzing report data...</p></div>`;
+        submitButton.disabled = true;
+
+        // Clone and replace buttons to remove old listeners
+        const newSubmitButton = submitButton.cloneNode(true) as HTMLButtonElement;
+        submitButton.parentNode!.replaceChild(newSubmitButton, submitButton);
+        const newSkipButton = skipButton.cloneNode(true) as HTMLButtonElement;
+        skipButton.parentNode!.replaceChild(newSkipButton, skipButton);
+
+        const submitHandler = () => handleAnswerSubmit(formData);
+        const skipHandler = () => {
+            modal.style.display = 'none';
+            proceedToSummaryGeneration(formData);
+        };
+        newSubmitButton.addEventListener('click', submitHandler);
+        newSkipButton.addEventListener('click', skipHandler);
+
+        try {
+            const ai = new GoogleGenAI({ apiKey: userApiKey! });
+            interviewChat = ai.chats.create({
+                model: 'gemini-2.5-flash',
+                config: {
+                    systemInstruction: "You are an expert engineering report assistant. Your goal is to help the user clarify ambiguities and add important details to their pipeline assessment report. Based on the provided assessment data, ask the user clarifying questions one by one. Ask only one question at a time. Keep your questions concise and focused on a single topic. Start by asking the first question. After the user answers, analyze their response and the original data to ask the next most relevant question. When you have no more questions, respond with the exact string 'INTERVIEW_COMPLETE'."
+                }
+            });
+
+            const textSummary = generateTextSummary(formData);
+            const initialPrompt = `Here is the data from a pipeline bridge crossing assessment. Please review it and ask me one clarifying question to start. The goal is to get more detail for the final report summary.\n\n${textSummary}`;
+            
+            const response = await interviewChat.sendMessage({ message: initialPrompt });
+            const firstQuestion = response.text.trim();
+            interviewHistory.push({ role: 'model', text: firstQuestion });
+
+            if (firstQuestion === 'INTERVIEW_COMPLETE') {
+                modal.style.display = 'none';
+                await proceedToSummaryGeneration(formData);
+            } else {
+                questionArea.innerHTML = `<p>${firstQuestion}</p>`;
+                newSubmitButton.disabled = false;
+            }
+        } catch (error) {
+            console.error("AI Interview failed to start:", error);
+            questionArea.innerHTML = `<p class="error">Sorry, I couldn't start the interview. Please check the console for errors and ensure the API key is valid.</p>`;
+        }
+    }
+
+    async function handleAnswerSubmit(formData: { [key: string]: any }) {
+        if (!interviewChat) return;
+
+        const questionArea = document.getElementById('ai-question-area')!;
+        const answerInput = document.getElementById('user-answer-input') as HTMLTextAreaElement;
+        const submitButton = document.getElementById('submit-answer-button') as HTMLButtonElement;
+
+        const answer = answerInput.value.trim();
+        if (!answer) {
+            alert("Please provide an answer.");
+            return;
+        }
+
+        interviewHistory.push({ role: 'user', text: answer });
+        answerInput.value = '';
+        submitButton.disabled = true;
+        questionArea.innerHTML = `<div class="spinner-container"><div class="spinner"></div></div>`;
+
+        try {
+            const response = await interviewChat.sendMessage({ message: answer });
+            const nextQuestion = response.text.trim();
+
+            if (nextQuestion === 'INTERVIEW_COMPLETE') {
+                (document.getElementById('ai-interview-modal')!).style.display = 'none';
+                await proceedToSummaryGeneration(formData);
+            } else {
+                interviewHistory.push({ role: 'model', text: nextQuestion });
+                questionArea.innerHTML = `<p>${nextQuestion}</p>`;
+                submitButton.disabled = false;
+            }
+        } catch (error) {
+            console.error("AI Interview error:", error);
+            questionArea.innerHTML = `<p class="error">Sorry, I encountered an error. Please check the console.</p>`;
+        }
+    }
+
+    async function proceedToSummaryGeneration(formData: { [key: string]: any }) {
         const loadingOverlay = document.getElementById('loading-overlay') as HTMLElement;
         const loadingText = document.getElementById('loading-text') as HTMLElement;
+        
+        let execSummary = "";
+        let finalSummary = "";
+
+        loadingText.textContent = "Generating Summaries...";
+        loadingOverlay.style.display = 'flex';
+
+        try {
+            let fullTextSummary = generateTextSummary(formData);
+
+            if (interviewHistory.length > 0) {
+                fullTextSummary += "\n\n--- Additional Information from Clarification Interview ---\n";
+                let currentQuestion = "";
+                interviewHistory.forEach(turn => {
+                    if (turn.role === 'model') {
+                        currentQuestion = turn.text;
+                    } else if (turn.role === 'user' && currentQuestion) {
+                        fullTextSummary += `Q: ${currentQuestion}\nA: ${turn.text}\n`;
+                        currentQuestion = ""; // Reset for the next pair
+                    }
+                });
+            }
+
+            const ai = new GoogleGenAI({ apiKey: userApiKey! });
+            const execSummaryPrompt = `Based on the following pipeline bridge crossing assessment data, write a detailed and comprehensive professional Executive Summary for an engineering report. Structure the summary with clear paragraphs that flow nicely, using formal, professional language. This summary should be thorough, elaborating on the overall condition, all findings from minor to high-priority, and the specific recommendations made. Where applicable, reference relevant industry standards such as 49 CFR 192 and ASME B31.8. Ensure the summary is extensive enough to provide a full overview without being overly brief. Data:\n${fullTextSummary}`;
+            const finalSummaryPrompt = `Based on the following pipeline bridge crossing assessment data, write a comprehensive "Final Summary of Evaluation". This should synthesize all key findings from the report into one or more detailed concluding paragraphs. Use formal, professional language and structure the response into well-formed paragraphs. Data:\n${fullTextSummary}`;
+
+            const promises = [
+                ai.models.generateContent({ model: 'gemini-2.5-flash', contents: execSummaryPrompt }),
+                ai.models.generateContent({ model: 'gemini-2.5-flash', contents: finalSummaryPrompt }),
+            ];
+
+            const [execResult, finalResult] = await Promise.allSettled(promises);
+
+            execSummary = (execResult.status === 'fulfilled')
+                ? execResult.value.text.replace(/[*#]/g, '')
+                : `Warning: Could not connect to the generation service. Please check the console for details.`;
+            finalSummary = (finalResult.status === 'fulfilled')
+                ? finalResult.value.text.replace(/[*#]/g, '')
+                : `Warning: Could not connect to the generation service. Please check the console for details.`;
+
+        } catch (error) {
+            console.error("Error generating report summaries:", error);
+            execSummary = "Error: Failed to generate executive summary.";
+            finalSummary = "Error: Failed to generate final summary.";
+        } finally {
+            loadingOverlay.style.display = 'none';
+            showSummaryReviewModal(formData, execSummary, finalSummary);
+        }
+    }
+
+    function showSummaryReviewModal(formData: { [key: string]: any }, execSummary: string, finalSummary: string) {
         const modal = document.getElementById('summary-review-modal') as HTMLElement;
         const execSummaryTextarea = document.getElementById('modal-exec-summary') as HTMLTextAreaElement;
         const finalSummaryTextarea = document.getElementById('modal-final-summary') as HTMLTextAreaElement;
-        
-        const formData = getFormData();
-        
-        let execSummary = "Executive Summary requires admin features to be unlocked.";
-        let finalSummary = "Final Summary requires admin features to be unlocked.";
 
-        if (document.body.classList.contains('voice-enabled')) {
-            loadingText.textContent = "Generating...";
-            loadingOverlay.style.display = 'flex';
-
-            if (!userApiKey) {
-                execSummary = "Could not generate summary: API Key is not set in the admin panel.";
-                finalSummary = "Could not generate summary: API Key is not set in the admin panel.";
-                loadingOverlay.style.display = 'none';
-            } else {
-                const fullTextSummary = generateTextSummary(formData);
-                const ai = new GoogleGenAI({ apiKey: userApiKey });
-
-                const execSummaryPrompt = `Based on the following pipeline bridge crossing assessment data, write a detailed and comprehensive professional Executive Summary for an engineering report. Structure the summary with clear paragraphs that flow nicely, using formal, professional language. This summary should be thorough, elaborating on the overall condition, all findings from minor to high-priority, and the specific recommendations made. Where applicable, reference relevant industry standards such as 49 CFR 192 and ASME B31.8. Ensure the summary is extensive enough to provide a full overview without being overly brief. Data:\n${fullTextSummary}`;
-                const finalSummaryPrompt = `Based on the following pipeline bridge crossing assessment data, write a comprehensive "Final Summary of Evaluation". This should synthesize all key findings from the report into one or more detailed concluding paragraphs. Use formal, professional language and structure the response into well-formed paragraphs. Data:\n${fullTextSummary}`;
-                
-                try {
-                    const promises = [
-                        ai.models.generateContent({ model: 'gemini-2.5-flash', contents: execSummaryPrompt }),
-                        ai.models.generateContent({ model: 'gemini-2.5-flash', contents: finalSummaryPrompt }),
-                    ];
-
-                    const [execResult, finalResult] = await Promise.allSettled(promises);
-
-                    execSummary = (execResult.status === 'fulfilled') 
-                        ? execResult.value.text.replace(/[*#]/g, '')
-                        : `Warning: Could not connect to the generation service to generate summary. Please check the console for details.`;
-            
-                    finalSummary = (finalResult.status === 'fulfilled') 
-                        ? finalResult.value.text.replace(/[*#]/g, '')
-                        : `Warning: Could not connect to the generation service to generate summary. Please check the console for details.`;
-                } catch (error) {
-                     console.error("Error generating report summaries:", error);
-                     execSummary = "Error: Failed to generate executive summary.";
-                     finalSummary = "Error: Failed to generate final summary.";
-                } finally {
-                    loadingOverlay.style.display = 'none';
-                }
-            }
-        }
-
-        // --- Populate Modal ---
         execSummaryTextarea.value = execSummary;
         finalSummaryTextarea.value = finalSummary;
-            
         autoResizeTextarea(execSummaryTextarea);
         autoResizeTextarea(finalSummaryTextarea);
 
         modal.style.display = 'flex';
         
-        // Add improve buttons if admin
+        const execWrapper = document.getElementById('modal-exec-summary-wrapper')!;
+        const finalWrapper = document.getElementById('modal-final-summary-wrapper')!;
+        execWrapper.querySelector('.improve-button')?.remove();
+        finalWrapper.querySelector('.improve-button')?.remove();
+
         if (document.body.classList.contains('voice-enabled')) {
-            addImproveButton(document.getElementById('modal-exec-summary-wrapper')!, execSummaryTextarea);
-            addImproveButton(document.getElementById('modal-final-summary-wrapper')!, finalSummaryTextarea);
+            addImproveButton(execWrapper, execSummaryTextarea);
+            addImproveButton(finalWrapper, finalSummaryTextarea);
         }
 
         const modalGeneratePdfButton = document.getElementById('modal-generate-pdf-button')!;
@@ -2049,16 +2185,13 @@ document.addEventListener('DOMContentLoaded', () => {
         
         const newGenerateButton = modalGeneratePdfButton.cloneNode(true);
         modalGeneratePdfButton.parentNode!.replaceChild(newGenerateButton, modalGeneratePdfButton);
-        
         const newCancelButton = modalCancelButton.cloneNode(true);
         modalCancelButton.parentNode!.replaceChild(newCancelButton, modalCancelButton);
-
 
         const generatePdfHandler = () => {
             modal.style.display = 'none';
             buildPdfDocument(formData, execSummaryTextarea.value, finalSummaryTextarea.value);
         };
-
         const cancelHandler = () => {
             modal.style.display = 'none';
         };
@@ -2092,6 +2225,9 @@ document.addEventListener('DOMContentLoaded', () => {
             
             formData['final-summary-evaluation'] = finalSummary;
     
+            const imageFiles = [...(fileDataStore['photographs'] || []), ...(fileDataStore['other-docs'] || [])]
+                .filter(file => file && (file.type === 'image/jpeg' || file.type === 'image/png'));
+
             // --- Helper for header/footer ---
             const addHeaderFooter = () => {
                 const pageCount = doc.internal.getNumberOfPages();
@@ -2204,8 +2340,6 @@ document.addEventListener('DOMContentLoaded', () => {
                  });
             }
 
-            const imageFiles = [...(fileDataStore['photographs'] || []), ...(fileDataStore['other-docs'] || [])]
-                .filter(file => file && (file.type === 'image/jpeg' || file.type === 'image/png'));
             if (imageFiles.length > 0) {
                 allTocItems.push({ uniqueId: 'photographs', title: 'Photographs and Attachments', level: 0 });
             }
@@ -2372,67 +2506,86 @@ document.addEventListener('DOMContentLoaded', () => {
             // =================================================================
             // PHOTOGRAPHS
             // =================================================================
-            if (imageFiles.length > 0) {
+            const photosStartPage = doc.internal.getCurrentPageInfo().pageNumber + 1;
+            const photoEntry = tocMap.get('photographs');
+            if (photoEntry) {
+                photoEntry.contentPage = photosStartPage;
+            }
+
+            for (const file of imageFiles) {
                 doc.addPage();
                 
-                const photosStartPage = doc.internal.getCurrentPageInfo().pageNumber;
-                const photoEntry = tocMap.get('photographs');
-                if (photoEntry) {
-                    photoEntry.contentPage = photosStartPage;
-                }
-    
-                let photoY = margin;
-    
-                doc.setFontSize(16);
-                doc.setFont('helvetica', 'bold');
-                doc.text('Photographs and Attachments', margin, photoY);
-                photoY += 10;
-                
-                for (const file of imageFiles) {
-                    let imgWidth, imgHeight;
-                    const spacing = 10;
-
-                    if (file.orientation === 'portrait') {
-                        imgWidth = 110;
-                        imgHeight = (imgWidth / 3) * 4; // ~146.67
-                    } else { // landscape or default
-                        imgWidth = 160;
-                        imgHeight = (imgWidth / 16) * 9; // 90
-                    }
-                    
-                    let commentHeight = 0;
-                    if (file.comment) {
-                        doc.setFontSize(9);
-                        doc.setFont('helvetica', 'italic');
-                        const commentLines = doc.splitTextToSize(file.comment, imgWidth);
-                        commentHeight = (commentLines.length * 4) + 2;
-                    }
-    
-                    if (photoY + imgHeight + commentHeight + spacing > pageHeight - margin) {
-                        doc.addPage();
-                        photoY = margin;
-                    }
-                    
-                    const imgX = (pageWidth - imgWidth) / 2;
-                    
-                    try {
-                        doc.addImage(file.dataUrl, file.type.split('/')[1].toUpperCase(), imgX, photoY, imgWidth, imgHeight);
-                    } catch (e) {
-                        console.error("Error adding image to PDF:", e);
+                try {
+                    const { width: originalWidth, height: originalHeight } = await getImageDimensions(file.dataUrl);
+                    // Check for invalid image dimensions right away
+                    if (originalWidth <= 0 || originalHeight <= 0) {
+                        console.error(`Skipping invalid image: ${file.name}`);
                         doc.setFont('helvetica', 'normal').setTextColor(255, 0, 0);
-                        doc.text(`Error rendering image: ${file.name}`, margin, photoY);
+                        doc.text(`Could not render image with invalid dimensions: ${file.name}.`, margin, margin);
                         doc.setTextColor(0, 0, 0);
+                        continue;
                     }
                     
+                    const availableWidth = pageWidth - margin * 2;
+                    const pageContentHeight = pageHeight - margin * 2;
+
+                    // 1. Calculate comment height first
+                    let commentHeight = 0;
+                    let commentLines: string[] = [];
+                    const spacing = 10;
                     if (file.comment) {
-                        doc.setFontSize(9);
+                        doc.setFontSize(11);
                         doc.setFont('helvetica', 'italic');
-                        const commentLines = doc.splitTextToSize(file.comment, imgWidth);
-                        doc.text(commentLines, imgX, photoY + imgHeight + 4);
-                        doc.setFont('helvetica', 'normal');
+                        commentLines = doc.splitTextToSize(file.comment, availableWidth);
+                        commentHeight = doc.getTextDimensions(commentLines).h;
+                    }
+
+                    // 2. Determine available height for the image itself
+                    const imageAvailableHeight = pageContentHeight - (commentHeight > 0 ? spacing + commentHeight : 0);
+
+                    // If there's no space for the image, just print the comment if it fits.
+                    if (imageAvailableHeight <= 0) {
+                         if (file.comment && commentHeight <= pageContentHeight) {
+                            const commentY = margin + (pageContentHeight - commentHeight) / 2;
+                            doc.text(commentLines, pageWidth / 2, commentY, { align: 'center' });
+                         }
+                         continue; // Move to next file
+                    }
+
+                    // 3. Calculate final image dimensions, preserving aspect ratio
+                    const imageAspectRatio = originalWidth / originalHeight;
+                    const availableBoxAspectRatio = availableWidth / imageAvailableHeight;
+                    let imgWidth, imgHeight;
+
+                    if (imageAspectRatio > availableBoxAspectRatio) {
+                        // Image is 'wider' than the available box, so width is the limiting factor.
+                        imgWidth = availableWidth;
+                        imgHeight = availableWidth / imageAspectRatio;
+                    } else {
+                        // Image is 'taller' than the available box, so height is the limiting factor.
+                        imgHeight = imageAvailableHeight;
+                        imgWidth = imageAvailableHeight * imageAspectRatio;
                     }
                     
-                    photoY += imgHeight + commentHeight + spacing;
+                    // 4. Center the entire block (image + comment) vertically on the page
+                    const totalContentHeight = imgHeight + (commentHeight > 0 ? spacing + commentHeight : 0);
+                    const blockStartY = margin + (pageContentHeight - totalContentHeight) / 2;
+                    
+                    const imgX = (pageWidth - imgWidth) / 2; // Center horizontally
+                    const imgY = blockStartY < margin ? margin : blockStartY;
+
+                    // 5. Render the image and then the comment
+                    doc.addImage(file.dataUrl, file.type.split('/')[1].toUpperCase(), imgX, imgY, imgWidth, imgHeight);
+
+                    if (file.comment) {
+                        const commentY = imgY + imgHeight + spacing;
+                        doc.text(commentLines, pageWidth / 2, commentY, { align: 'center' });
+                    }
+                } catch (e) {
+                    console.error("Error processing image for PDF:", e);
+                    doc.setFont('helvetica', 'normal').setTextColor(255, 0, 0);
+                    doc.text(`Error rendering image: ${file.name}. Please check the file.`, margin, margin);
+                    doc.setTextColor(0, 0, 0);
                 }
             }
     
@@ -2460,6 +2613,215 @@ document.addEventListener('DOMContentLoaded', () => {
         } catch (error) {
             console.error("Failed to generate report:", error);
             alert("An unexpected error occurred while generating the PDF. Please check the console for details.");
+        } finally {
+            loadingOverlay.style.display = 'none';
+        }
+    }
+
+    async function generatePaperForm() {
+        const loadingOverlay = document.getElementById('loading-overlay') as HTMLElement;
+        const loadingText = document.getElementById('loading-text') as HTMLElement;
+        loadingText.textContent = "Generating Paper Form...";
+        loadingOverlay.style.display = 'flex';
+
+        try {
+            const { jsPDF } = window.jspdf;
+            const doc = new jsPDF('p', 'mm', 'a4');
+            const pageWidth = doc.internal.pageSize.getWidth();
+            const pageHeight = doc.internal.pageSize.getHeight();
+            const margin = 15;
+            let cursorY = margin;
+
+            // --- PDF Helper Functions ---
+            const addHeaderFooter = () => {
+                const pageCount = doc.internal.getNumberOfPages();
+                for (let i = 1; i <= pageCount; i++) {
+                    doc.setPage(i);
+                    doc.setFontSize(9);
+                    doc.setFont('helvetica', 'normal');
+                    doc.text(`Page ${i} of ${pageCount}`, pageWidth - margin, pageHeight - 10, { align: 'right' });
+                    doc.text('Pipeline Bridge Crossing Assessment - Field Form', margin, pageHeight - 10);
+                }
+            };
+            
+            const checkPageBreak = (neededHeight: number) => {
+                if (cursorY + neededHeight > pageHeight - margin) {
+                    doc.addPage();
+                    cursorY = margin;
+                }
+            };
+
+            const renderOptions = (options: ({ value: string; text: string }[] | string[]), startX: number, startY: number, type: 'radio' | 'checkbox', itemHeight: number) => {
+                let currentX = startX;
+                cursorY = startY;
+                const availableWidth = pageWidth - margin - startX;
+                doc.setFontSize(10).setFont('helvetica', 'normal');
+
+                for (const opt of options) {
+                    const text = typeof opt === 'string' ? opt : opt.text;
+                    if (!text || (typeof opt !== 'string' && opt.value === '')) continue;
+                    
+                    let extraText = '';
+                    if (typeof opt !== 'string') {
+                         if (['expansion_joint', 'mechanical_joint'].includes(opt.value)) {
+                            extraText = ' (Qty: ______)';
+                         }
+                    }
+                    const fullText = text + extraText;
+                    const textWidth = doc.getTextWidth(fullText) + 12; // Checkbox/circle + spacing
+
+                    if (currentX !== startX && currentX + textWidth > startX + availableWidth) {
+                        currentX = startX;
+                        cursorY += itemHeight;
+                        checkPageBreak(itemHeight);
+                    }
+                    
+                    doc.setDrawColor(0);
+                    if (type === 'radio') {
+                        doc.circle(currentX + 2, cursorY + 2, 2);
+                    } else {
+                        doc.rect(currentX, cursorY, 4, 4);
+                    }
+                    doc.text(fullText, currentX + 6, cursorY + 3.5);
+                    currentX += textWidth;
+                }
+                cursorY += itemHeight;
+            };
+
+
+            // --- PDF Content Generation ---
+            doc.setFontSize(18).setFont('helvetica', 'bold');
+            doc.text('Pipeline Bridge Crossing Assessment - Field Form', pageWidth / 2, cursorY, { align: 'center' });
+            cursorY += 15;
+
+            for (const section of formSections) {
+                checkPageBreak(20);
+                doc.setFillColor(238, 241, 245);
+                doc.rect(margin, cursorY, pageWidth - (margin * 2), 9, 'F');
+                doc.setFontSize(12).setFont('helvetica', 'bold');
+                doc.text(`${formSections.indexOf(section) + 1}. ${section.title}`, margin + 2, cursorY + 6.5);
+                cursorY += 14;
+
+                for (const field of section.fields) {
+                    if (field.type === 'file') continue; // Skip file inputs for paper form
+
+                    checkPageBreak(field.type === 'textarea' ? 30 : 20);
+                    doc.setFontSize(11).setFont('helvetica', 'bold');
+                    const labelLines = doc.splitTextToSize(field.label, pageWidth - (margin * 2));
+                    doc.text(labelLines, margin, cursorY);
+                    cursorY += (labelLines.length * 5) + 2;
+
+                    doc.setFontSize(10).setFont('helvetica', 'normal');
+                    doc.setDrawColor(150);
+                    
+                    switch (field.type) {
+                        case 'text':
+                        case 'number':
+                        case 'date':
+                            doc.line(margin, cursorY, pageWidth - margin, cursorY);
+                            cursorY += 4;
+                            break;
+                        case 'textarea':
+                            doc.rect(margin, cursorY, pageWidth - margin * 2, 25);
+                            cursorY += 28;
+                            break;
+                        case 'select':
+                             if (field.id === 'system-select') {
+                                Object.entries(systemData).forEach(([docName, systems]) => {
+                                    const docLabel = formSections.find(s=>s.id === 'general-info')?.fields.find(f=>f.id==='doc-select')?.options?.find(o => o.value === docName)?.text;
+                                    doc.setFontSize(10).setFont('helvetica', 'bold');
+                                    doc.text(docLabel || docName.toUpperCase(), margin + 2, cursorY);
+                                    cursorY += 5;
+                                    renderOptions(systems, margin + 4, cursorY, 'checkbox', 6);
+                                    cursorY += 2;
+                                });
+                            } else if (field.options) {
+                                renderOptions(field.options, margin, cursorY, 'checkbox', 6);
+                            }
+                            break;
+                        case 'checkbox-group':
+                        case 'radio-group':
+                             if (field.checkboxOptions) {
+                                renderOptions(field.checkboxOptions, margin, cursorY, field.type === 'radio-group' ? 'radio' : 'checkbox', 7);
+                            }
+                            if (field.id === 'expansion-feature') {
+                                doc.text('If "Expansion Loop" is selected, complete details on the "Expansion Loop Details" page.', margin, cursorY, { textColor: 'gray', fontSize: 9});
+                                cursorY += 6;
+                            }
+                            break;
+                        case 'clearance-group':
+                            if (field.options) {
+                                field.options.forEach(opt => {
+                                    doc.setFontSize(10).setFont('helvetica', 'normal');
+                                    const text = `${opt.text}:`;
+                                    doc.text(text, margin + 2, cursorY);
+                                    const textWidth = doc.getTextWidth(text);
+                                    doc.line(margin + 4 + textWidth, cursorY, pageWidth - margin - 20, cursorY);
+                                    doc.text('ft  /  in', pageWidth - margin - 18, cursorY);
+                                    cursorY += 8;
+                                });
+                            }
+                            break;
+                    }
+
+                    if (field.assessmentOptions) {
+                        cursorY += 2;
+                        renderOptions(field.assessmentOptions, margin, cursorY, 'radio', 6);
+                    }
+                    cursorY += 5; // Padding between fields
+                }
+            }
+
+            // --- Special Page for Expansion Loops ---
+            doc.addPage();
+            cursorY = margin;
+            doc.setFontSize(14).setFont('helvetica', 'bold').text('Expansion Loop Details', margin, cursorY);
+            cursorY += 10;
+            for (let i = 1; i <= 3; i++) {
+                checkPageBreak(60);
+                doc.setDrawColor(100);
+                doc.rect(margin, cursorY, pageWidth - margin*2, 55);
+                doc.setFontSize(12).setFont('helvetica', 'bold');
+                doc.text(`Expansion Loop #${i}`, margin + 2, cursorY + 7);
+                cursorY += 15;
+                
+                doc.setFontSize(10).setFont('helvetica', 'normal');
+                doc.text('Leg 1 Dimension (center-to-center, ft):', margin + 5, cursorY);
+                doc.line(margin + 75, cursorY, pageWidth - margin - 5, cursorY);
+                cursorY += 10;
+                doc.text('Leg 2 Dimension (center-to-center, ft):', margin + 5, cursorY);
+                doc.line(margin + 75, cursorY, pageWidth - margin - 5, cursorY);
+                cursorY += 10;
+                doc.text('Leg 3 Dimension (center-to-center, ft):', margin + 5, cursorY);
+                doc.line(margin + 75, cursorY, pageWidth - margin - 5, cursorY);
+                cursorY += 10;
+                doc.text('Dimension Source:', margin + 5, cursorY);
+                renderOptions(['Measured', 'Assumed', 'Obtained from records', 'Other'], margin + 40, cursorY - 3.5, 'radio', 6);
+                cursorY += 15;
+            }
+
+            // --- Special Page for Photographs ---
+            doc.addPage();
+            cursorY = margin;
+            doc.setFontSize(14).setFont('helvetica', 'bold').text('Photograph & Attachment Log', margin, cursorY);
+            cursorY += 10;
+            (doc as any).autoTable({
+                startY: cursorY,
+                head: [['Photo #', 'Description / Comment']],
+                body: Array(25).fill(['', '']), // 25 empty rows
+                theme: 'grid',
+                headStyles: { fillColor: [0, 90, 156] },
+                styles: { cellPadding: 4, minCellHeight: 10 }
+            });
+            
+
+            addHeaderFooter();
+            const date = new Date().toISOString().split('T')[0];
+            doc.save(`pipeline-assessment-paper-form-${date}.pdf`);
+
+        } catch(error) {
+            console.error("Failed to generate paper form:", error);
+            alert("An unexpected error occurred while generating the paper form. Please check the console for details.");
         } finally {
             loadingOverlay.style.display = 'none';
         }
@@ -2616,6 +2978,7 @@ document.addEventListener('DOMContentLoaded', () => {
     openButton.addEventListener('click', handleOpenAssessment);
     openFileInput.addEventListener('change', loadAssessmentFile);
     generateReportButton.addEventListener('click', handleGenerateReport);
+    generatePaperFormButton.addEventListener('click', generatePaperForm);
     exampleButton.addEventListener('click', handleExampleAssessment);
     
     adminUnlockButton.addEventListener('click', handleAdminUnlock);

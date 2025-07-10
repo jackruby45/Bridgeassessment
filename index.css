@@ -1043,6 +1043,84 @@ body.voice-enabled .improve-button {
     gap: 10px;
 }
 
+/* AI Interview Modal Styles */
+#ai-interview-area {
+    display: flex;
+    flex-direction: column;
+    gap: 20px;
+    margin: 20px 0;
+}
+
+#ai-question-area {
+    background-color: #eef1f5;
+    padding: 15px 20px;
+    border-radius: 8px;
+    min-height: 50px;
+    border: 1px solid #d8e0e7;
+    color: #003366;
+    font-size: 1.05em;
+    line-height: 1.5;
+}
+
+#ai-question-area .spinner-container {
+    display: flex;
+    align-items: center;
+    gap: 15px;
+}
+#ai-question-area .spinner-container p {
+    margin: 0;
+    color: #555;
+    font-size: 1em;
+}
+/* Use a smaller spinner for the modal */
+#ai-question-area .spinner {
+    width: 30px;
+    height: 30px;
+    border-width: 4px;
+}
+#ai-question-area p.error {
+    color: #dc3545;
+    font-weight: 500;
+    margin: 0;
+}
+
+
+#user-answer-area {
+    display: flex;
+    flex-direction: column;
+    gap: 10px;
+}
+
+#user-answer-area textarea {
+    width: 100%;
+    padding: 12px;
+    border: 1px solid #bcccdc;
+    border-radius: 6px;
+    box-sizing: border-box;
+    font-size: 1em;
+    resize: vertical;
+}
+
+#user-answer-area #submit-answer-button {
+    align-self: flex-end;
+}
+#submit-answer-button:disabled {
+    background-color: #adb5bd;
+    cursor: not-allowed;
+    opacity: 0.8;
+}
+
+#skip-interview-button {
+    width: auto;
+    padding: 10px 15px;
+    font-size: 0.9em;
+}
+
+.modal-actions #skip-interview-button {
+    margin-right: auto; /* Push skip button to the left */
+}
+
+
 /* Responsive adjustments */
 @media (max-width: 768px) {
     #app-container {

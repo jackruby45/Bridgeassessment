@@ -28,6 +28,7 @@
             <button id="save-assessment-button" class="control-button">Save Assessment</button>
             <button id="open-assessment-button" class="control-button">Open Assessment</button>
             <button id="generate-report-button" class="control-button">Generate Report</button>
+            <button id="generate-paper-form-button" class="control-button">Generate Paper Form</button>
             <button id="example-assessment-button" class="control-button">Example Assessment</button>
             <input type="file" id="open-file-input" style="display: none;" accept=".json">
         </div>
@@ -89,6 +90,29 @@
             <div class="modal-actions">
                 <button id="modal-cancel-button" class="control-button secondary">Cancel</button>
                 <button id="modal-generate-pdf-button" class="control-button">Generate Final PDF</button>
+            </div>
+        </div>
+    </div>
+
+    <!-- AI Interview Modal -->
+    <div id="ai-interview-modal" class="modal-overlay">
+        <div class="modal-content">
+            <h2>Clarification Interview</h2>
+            <p>The AI will ask a few questions to help clarify details for the report. Your answers will improve the final summary.</p>
+            <div id="ai-interview-area">
+                <div id="ai-question-area">
+                    <div class="spinner-container">
+                        <div class="spinner"></div>
+                        <p>Analyzing report data...</p>
+                    </div>
+                </div>
+                <div id="user-answer-area">
+                    <textarea id="user-answer-input" placeholder="Your answer..." rows="3"></textarea>
+                    <button id="submit-answer-button" class="control-button">Submit Answer</button>
+                </div>
+            </div>
+            <div class="modal-actions">
+                <button id="skip-interview-button" class="control-button secondary">Skip &amp; Generate Summaries</button>
             </div>
         </div>
     </div>
