@@ -1,4 +1,6 @@
 // index.tsx
+import { GoogleGenAI, GenerateContentResponse } from "@google/genai";
+
 // Extend the global Window interface to include jsPDF and SpeechRecognition
 declare global {
     interface Window {
@@ -34,7 +36,6 @@ interface FileWithComment {
     comment: string;
     dataUrl: string; // Base64 encoded data URL
     type: string;    // MIME type
-    orientation?: 'portrait' | 'landscape';
 }
 
 interface FormSectionData {
@@ -139,44 +140,6 @@ function renderFileList(inputId: string) {
 
             fileInfoContainer.appendChild(fileNameEl);
             fileInfoContainer.appendChild(commentInput);
-
-            // Add orientation controls for image files
-            if (fileInfo.type.startsWith('image/')) {
-                const orientationControls = document.createElement('div');
-                orientationControls.className = 'orientation-controls';
-
-                const landscapeBtn = document.createElement('button');
-                landscapeBtn.type = 'button';
-                landscapeBtn.textContent = 'Landscape';
-                landscapeBtn.className = 'orientation-btn';
-                if (fileInfo.orientation === 'landscape' || !fileInfo.orientation) {
-                    landscapeBtn.classList.add('active');
-                }
-                landscapeBtn.onclick = () => {
-                    if (fileDataStore[inputId] && fileDataStore[inputId][index]) {
-                        fileDataStore[inputId][index].orientation = 'landscape';
-                        renderFileList(inputId);
-                    }
-                };
-
-                const portraitBtn = document.createElement('button');
-                portraitBtn.type = 'button';
-                portraitBtn.textContent = 'Portrait';
-                portraitBtn.className = 'orientation-btn';
-                if (fileInfo.orientation === 'portrait') {
-                    portraitBtn.classList.add('active');
-                }
-                portraitBtn.onclick = () => {
-                    if (fileDataStore[inputId] && fileDataStore[inputId][index]) {
-                        fileDataStore[inputId][index].orientation = 'portrait';
-                        renderFileList(inputId);
-                    }
-                };
-                
-                orientationControls.appendChild(landscapeBtn);
-                orientationControls.appendChild(portraitBtn);
-                fileInfoContainer.appendChild(orientationControls);
-            }
             
             listItem.appendChild(filePreviewContainer);
             listItem.appendChild(fileInfoContainer);
@@ -209,23 +172,23 @@ function autoResizeTextarea(textarea: HTMLTextAreaElement) {
     textarea.style.height = `${textarea.scrollHeight}px`;
 }
 
-// --- Helper to add text reword button ---
-function addRewordButton(wrapper: HTMLElement, inputElement: HTMLTextAreaElement) {
-    const rewordButton = document.createElement('button');
-    rewordButton.type = 'button';
-    rewordButton.classList.add('reword-button');
-    rewordButton.textContent = 'Reword';
-    rewordButton.setAttribute('aria-label', `Reword text for ${inputElement.id}`);
+// --- Helper to add text improvement button ---
+function addImproveButton(wrapper: HTMLElement, inputElement: HTMLTextAreaElement) {
+    const improveButton = document.createElement('button');
+    improveButton.type = 'button';
+    improveButton.classList.add('improve-button');
+    improveButton.textContent = 'Improve';
+    improveButton.setAttribute('aria-label', `Improve text for ${inputElement.id}`);
 
-    rewordButton.addEventListener('click', async () => {
+    improveButton.addEventListener('click', async () => {
         const originalText = inputElement.value.trim();
         if (!originalText) {
-            alert("There is no text to reword.");
+            alert("There is no text to improve.");
             return;
         }
 
-        rewordButton.disabled = true;
-        rewordButton.textContent = 'Working...';
+        improveButton.disabled = true;
+        improveButton.textContent = 'Working...';
         
         const oldSuggestions = wrapper.querySelector('.suggestions-container');
         if (oldSuggestions) {
@@ -233,33 +196,36 @@ function addRewordButton(wrapper: HTMLElement, inputElement: HTMLTextAreaElement
         }
         
         try {
-            // Call the OpenAI API
-            const response = await fetch('https://api.openai.com/v1/chat/completions', {
-                method: 'POST',
-                headers: {
-                    'Content-Type': 'application/json',
-                    'Authorization': `Bearer ${process.env.OPENAI_API_KEY}`
-                },
-                body: JSON.stringify({
-                    model: 'gpt-3.5-turbo',
-                    messages: [{ 
-                        role: 'user', 
-                        content: `Reword the following text. Provide three professional-sounding alternative versions, each on a new line, without any numbering, bullet points, or extra commentary: "${originalText}"`
-                    }]
-                }),
+            const ai = new GoogleGenAI({apiKey: process.env.API_KEY});
+            const prompt = `Rewrite the following text for a professional engineering field report. Your response must be in a JSON array format containing 3 distinct alternative versions, like ["suggestion 1", "suggestion 2", "suggestion 3"]. For each suggestion, use well-structured paragraphs and professional, formal language appropriate for an engineering document. Improve clarity, grammar, and sentence structure, while preserving all original facts and the core meaning. Do not add any new information. Original text: "${originalText}"`;
+            
+            const response: GenerateContentResponse = await ai.models.generateContent({
+                model: 'gemini-2.5-flash',
+                contents: prompt,
+                config: { responseMimeType: "application/json" }
             });
-
-            if (!response.ok) {
-                const errorData = await response.json();
-                throw new Error(errorData.error?.message || `API Error: ${response.status} ${response.statusText}.`);
+            
+            let suggestions: string[] = [];
+            let jsonStr = response.text.trim();
+            const fenceRegex = /^```(\w*)?\s*\n?(.*?)\n?\s*```$/s;
+            const match = jsonStr.match(fenceRegex);
+            if (match && match[2]) {
+              jsonStr = match[2].trim();
+            }
+            
+            try {
+                const parsedData = JSON.parse(jsonStr);
+                if (Array.isArray(parsedData) && parsedData.every(item => typeof item === 'string')) {
+                    suggestions = parsedData;
+                } else {
+                    suggestions = [response.text];
+                }
+            } catch (e) {
+                suggestions = [response.text]; 
             }
 
-            const responseData = await response.json();
-            const rawContent = responseData.choices[0]?.message?.content || '';
-            const suggestions = rawContent.split('\n').map(s => s.trim()).filter(Boolean);
-
             if (suggestions.length === 0) {
-                alert("Could not generate reword suggestions.");
+                alert("Could not generate improvement suggestions.");
                 return;
             }
 
@@ -301,15 +267,15 @@ function addRewordButton(wrapper: HTMLElement, inputElement: HTMLTextAreaElement
             wrapper.appendChild(suggestionsContainer);
 
         } catch (error) {
-            console.error("Error rewording text:", error);
+            console.error("Error improving text:", error);
             alert("Could not retrieve suggestions. Please check the console for more details.");
         } finally {
-            rewordButton.disabled = false;
-            rewordButton.textContent = 'Reword';
+            improveButton.disabled = false;
+            improveButton.textContent = 'Improve';
         }
     });
 
-    wrapper.appendChild(rewordButton);
+    wrapper.appendChild(improveButton);
 }
 
 // --- Helper to add voice-to-text microphone button ---
@@ -647,7 +613,7 @@ function createFieldElement(field: FormField): HTMLElement {
         inputWrapper.appendChild(textarea);
         if (voiceEnabledFieldIds.includes(field.id)) {
             addMicrophoneButton(inputWrapper as HTMLElement, textarea);
-            addRewordButton(inputWrapper as HTMLElement, textarea);
+            addImproveButton(inputWrapper as HTMLElement, textarea);
         }
 
     } else if (field.type === 'file') {
@@ -665,13 +631,7 @@ function createFieldElement(field: FormField): HTMLElement {
                 for (const file of Array.from(files)) {
                   try {
                     const dataUrl = await readFileAsDataURL(file);
-                    fileDataStore[field.id].push({ 
-                        name: file.name, 
-                        comment: '', 
-                        dataUrl, 
-                        type: file.type, 
-                        orientation: 'landscape' 
-                    });
+                    fileDataStore[field.id].push({ name: file.name, comment: '', dataUrl, type: file.type });
                   } catch (error) {
                     console.error("Error reading file:", file.name, error);
                     alert(`Could not read file: ${file.name}`);
@@ -1679,7 +1639,7 @@ document.addEventListener('DOMContentLoaded', () => {
             <h4>10. Documentation</h4>
             <p>This section is for uploading all collected visual evidence and records.</p>
             <ul>
-                <li><strong>Upload Photographs/Sketches:</strong> Upload all digital photographs. It is critical to use the comment field for each photo to provide a descriptive caption (e.g., "View from North abutment looking South," "Close-up of corrosion at support H-3," "Sketch of dent measurement on top of pipe"). Use the orientation buttons to set how the photo should appear in the final PDF report.</li>
+                <li><strong>Upload Photographs/Sketches:</strong> Upload all digital photographs. It is critical to use the comment field for each photo to provide a descriptive caption (e.g., "View from North abutment looking South," "Close-up of corrosion at support H-3," "Sketch of dent measurement on top of pipe").</li>
                 <li><strong>Upload Other Documents:</strong> Upload any supporting files, such as sketches, previous reports, or relevant pages from construction drawings.</li>
             </ul>
 
@@ -1974,47 +1934,26 @@ document.addEventListener('DOMContentLoaded', () => {
 
             const fullTextSummary = generateTextSummary(formData);
 
-            // --- Summary Generation using OpenAI ---
+            // --- Summary Generation ---
+            const ai = new GoogleGenAI({ apiKey: process.env.API_KEY });
+
             const execSummaryPrompt = `Based on the following pipeline bridge crossing assessment data, write a detailed and comprehensive professional Executive Summary for an engineering report. Structure the summary with clear paragraphs that flow nicely, using formal, professional language. This summary should be thorough, elaborating on the overall condition, all findings from minor to high-priority, and the specific recommendations made. Where applicable, reference relevant industry standards such as 49 CFR 192 and ASME B31.8. Ensure the summary is extensive enough to provide a full overview without being overly brief. Data:\n${fullTextSummary}`;
             const finalSummaryPrompt = `Based on the following pipeline bridge crossing assessment data, write a comprehensive "Final Summary of Evaluation". This should synthesize all key findings from the report into one or more detailed concluding paragraphs. Use formal, professional language and structure the response into well-formed paragraphs. Data:\n${fullTextSummary}`;
             
             try {
-                const callOpenAI = async (prompt: string) => {
-                    const response = await fetch('https://api.openai.com/v1/chat/completions', {
-                        method: 'POST',
-                        headers: {
-                            'Content-Type': 'application/json',
-                            'Authorization': `Bearer ${process.env.OPENAI_API_KEY}`
-                        },
-                        body: JSON.stringify({
-                            model: 'gpt-3.5-turbo',
-                            messages: [{ role: 'user', content: prompt }]
-                        })
-                    });
-
-                    if (!response.ok) {
-                        const errorText = await response.text();
-                        console.error("OpenAI API Error:", errorText);
-                        throw new Error(`OpenAI request failed with status ${response.status}`);
-                    }
-
-                    const data = await response.json();
-                    return data.choices[0]?.message?.content || '';
-                };
-                
                 const promises = [
-                    callOpenAI(execSummaryPrompt),
-                    callOpenAI(finalSummaryPrompt),
+                    ai.models.generateContent({ model: 'gemini-2.5-flash', contents: execSummaryPrompt }),
+                    ai.models.generateContent({ model: 'gemini-2.5-flash', contents: finalSummaryPrompt }),
                 ];
 
                 const [execResult, finalResult] = await Promise.allSettled(promises);
 
                 execSummary = (execResult.status === 'fulfilled') 
-                    ? execResult.value.replace(/[*#]/g, '')
+                    ? execResult.value.text.replace(/[*#]/g, '')
                     : `Warning: Could not connect to the generation service to generate summary. Please check the console for details.`;
         
                 finalSummary = (finalResult.status === 'fulfilled') 
-                    ? finalResult.value.replace(/[*#]/g, '')
+                    ? finalResult.value.text.replace(/[*#]/g, '')
                     : `Warning: Could not connect to the generation service to generate summary. Please check the console for details.`;
             } catch (error) {
                  console.error("Error generating report summaries:", error);
@@ -2034,10 +1973,10 @@ document.addEventListener('DOMContentLoaded', () => {
 
         modal.style.display = 'flex';
         
-        // Add reword buttons if admin
+        // Add improve buttons if admin
         if (document.body.classList.contains('voice-enabled')) {
-            addRewordButton(document.getElementById('modal-exec-summary-wrapper')!, execSummaryTextarea);
-            addRewordButton(document.getElementById('modal-final-summary-wrapper')!, finalSummaryTextarea);
+            addImproveButton(document.getElementById('modal-exec-summary-wrapper')!, execSummaryTextarea);
+            addImproveButton(document.getElementById('modal-final-summary-wrapper')!, finalSummaryTextarea);
         }
 
         const modalGeneratePdfButton = document.getElementById('modal-generate-pdf-button')!;
@@ -2156,7 +2095,7 @@ document.addEventListener('DOMContentLoaded', () => {
                     doc.setFont('helvetica', 'normal');
                 }
                 doc.text(line, margin, cursorY);
-                cursorY += summaryLineHeight * 2;
+                cursorY += summaryLineHeight;
             }
     
             // =================================================================
@@ -2385,18 +2324,11 @@ document.addEventListener('DOMContentLoaded', () => {
                 photoY += 10;
                 
                 for (const file of imageFiles) {
-                    let imgWidth, imgHeight;
+                    const imgWidth = 120;
+                    const imgHeight = (imgWidth / 4) * 3;
                     const spacing = 10;
-
-                    if (file.orientation === 'portrait') {
-                        imgWidth = 110;
-                        imgHeight = (imgWidth / 3) * 4; // ~146.67
-                    } else { // landscape or default
-                        imgWidth = 160;
-                        imgHeight = (imgWidth / 16) * 9; // 90
-                    }
-                    
                     let commentHeight = 0;
+    
                     if (file.comment) {
                         doc.setFontSize(9);
                         doc.setFont('helvetica', 'italic');
@@ -2409,10 +2341,8 @@ document.addEventListener('DOMContentLoaded', () => {
                         photoY = margin;
                     }
                     
-                    const imgX = (pageWidth - imgWidth) / 2;
-                    
                     try {
-                        doc.addImage(file.dataUrl, file.type.split('/')[1].toUpperCase(), imgX, photoY, imgWidth, imgHeight);
+                        doc.addImage(file.dataUrl, file.type.split('/')[1].toUpperCase(), margin, photoY, imgWidth, imgHeight);
                     } catch (e) {
                         console.error("Error adding image to PDF:", e);
                         doc.setFont('helvetica', 'normal').setTextColor(255, 0, 0);
@@ -2424,7 +2354,7 @@ document.addEventListener('DOMContentLoaded', () => {
                         doc.setFontSize(9);
                         doc.setFont('helvetica', 'italic');
                         const commentLines = doc.splitTextToSize(file.comment, imgWidth);
-                        doc.text(commentLines, imgX, photoY + imgHeight + 4);
+                        doc.text(commentLines, margin, photoY + imgHeight + 4);
                         doc.setFont('helvetica', 'normal');
                     }
                     
@@ -2557,9 +2487,9 @@ document.addEventListener('DOMContentLoaded', () => {
             "final-summary-evaluation": "The pipeline at this crossing is in generally good condition and fit for service. The primary support hangers are secure, and clearances are adequate. Two minor maintenance items were identified: stiff roller supports and a small coating scratch requiring repair. These items have been assigned a medium priority for resolution to ensure the long-term integrity of the crossing. No immediate hazards were identified.",
             "fileData": {
                 "photographs": [
-                    { "name": "View_from_North_Abutment.jpg", "comment": "Photo taken from the north abutment looking south along the pipeline.", "dataUrl": "data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mNkYAAAAAYAAjCB0C8AAAAASUVORK5CYII=", "type": "image/jpeg", "orientation": "landscape" },
-                    { "name": "Coating_Scratch_H12.jpg", "comment": "Close-up of the coating scratch identified at support H-12.", "dataUrl": "data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mNkYAAAAAYAAjCB0C8AAAAASUVORK5CYII=", "type": "image/jpeg", "orientation": "portrait" },
-                    { "name": "South_Roller_Support.jpg", "comment": "View of the roller support at the south abutment, showing signs of stiffness.", "dataUrl": "data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mNkYAAAAAYAAjCB0C8AAAAASUVORK5CYII=", "type": "image/jpeg", "orientation": "landscape" }
+                    { "name": "View_from_North_Abutment.jpg", "comment": "Photo taken from the north abutment looking south along the pipeline.", "dataUrl": "data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mNkYAAAAAYAAjCB0C8AAAAASUVORK5CYII=", "type": "image/jpeg" },
+                    { "name": "Coating_Scratch_H12.jpg", "comment": "Close-up of the coating scratch identified at support H-12.", "dataUrl": "data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mNkYAAAAAYAAjCB0C8AAAAASUVORK5CYII=", "type": "image/jpeg" },
+                    { "name": "South_Roller_Support.jpg", "comment": "View of the roller support at the south abutment, showing signs of stiffness.", "dataUrl": "data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mNkYAAAAAYAAjCB0C8AAAAASUVORK5CYII=", "type": "image/jpeg" }
                 ],
                 "other-docs": []
             }
@@ -2630,5 +2560,3 @@ document.addEventListener('DOMContentLoaded', () => {
     handleDocChange(); // Initial call to set up the system select container correctly
     handlePipeMaterialChange(); // Initial call to set up conditional pipe fields
 });
-
-export {};
