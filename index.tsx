@@ -1,4 +1,3 @@
-
 // index.tsx
 import { GoogleGenAI, GenerateContentResponse, Chat } from "@google/genai";
 
@@ -1344,7 +1343,8 @@ const formSections: FormSectionData[] = [
                     { value: "tbd", text: "To be determined" }
                 ]
             },
-            { label: "Summary of Recommendations / Specify \"Other\" / Timeline:", id: "recommendations-summary", type: "textarea", placeholder: "List specific, actionable recommendations." },
+            { label: "Summary of Recommendations / Specify \"Other\" / Timeline:", id: "recommendations-summary", type: "textarea", placeholder: "List specific, actionable recommendations, one per line." },
+            { label: "Responsible Party/Department:", id: "responsible-party", type: "text", placeholder: "e.g., Field Operations, Gas Engineering" },
             { label: "Final Summary of Evaluation:", id: "final-summary-evaluation", type: "textarea", placeholder: "Provide an overall summary of the crossing's condition." }
         ]
     }
@@ -2340,6 +2340,10 @@ document.addEventListener('DOMContentLoaded', () => {
                  });
             }
 
+            if (formData['recommendations-summary'] && formData['recommendations-summary'].trim() !== '') {
+                allTocItems.push({ uniqueId: 'action_items', title: 'Action Item List', level: 0 });
+            }
+
             if (imageFiles.length > 0) {
                 allTocItems.push({ uniqueId: 'photographs', title: 'Photographs and Attachments', level: 0 });
             }
@@ -2504,12 +2508,57 @@ document.addEventListener('DOMContentLoaded', () => {
             });
     
             // =================================================================
+            // ACTION ITEMS
+            // =================================================================
+            const recommendationsSummary = formData['recommendations-summary'];
+            const responsibleParty = formData['responsible-party'];
+            const priorityValue = formData['recommendation-priority'];
+            const actionItemEntry = tocMap.get('action_items');
+
+            if (actionItemEntry && recommendationsSummary && recommendationsSummary.trim() !== '') {
+                const recommendationPriorityField = formSections
+                    .find(s => s.id === 'recommendations')?.fields
+                    .find(f => f.id === 'recommendation-priority');
+                const priorityOption = recommendationPriorityField?.options?.find(opt => opt.value === priorityValue);
+                const whenText = priorityOption ? priorityOption.text : (priorityValue || 'N/A');
+
+                const actionItems = recommendationsSummary.split('\n').filter((line: string) => line.trim() !== '');
+                const actionItemData = actionItems.map((action: string) => [
+                    action.replace(/^\d+[.)]?\s*/, '').trim(), // Strip leading numbers
+                    responsibleParty || 'N/A',
+                    whenText
+                ]);
+
+                let lastAutoTable = (doc as any).lastAutoTable;
+                let startY = lastAutoTable ? lastAutoTable.finalY + 10 : margin;
+
+                if (startY > pageHeight - margin - 20) { // Check for space for header + one row
+                    doc.addPage();
+                    startY = margin;
+                }
+                actionItemEntry.contentPage = doc.internal.getCurrentPageInfo().pageNumber;
+
+                doc.setFontSize(14);
+                doc.setFont('helvetica', 'bold');
+                doc.text('Action Item List', margin, startY);
+                startY += 8;
+
+                (doc as any).autoTable({
+                    startY: startY,
+                    head: [['What is Needed', 'Who is Responsible', 'When it Will be Done']],
+                    body: actionItemData,
+                    theme: 'grid',
+                    headStyles: { fillColor: [217, 83, 79] }, // Reddish color for attention
+                });
+            }
+
+            // =================================================================
             // PHOTOGRAPHS
             // =================================================================
-            const photosStartPage = doc.internal.getCurrentPageInfo().pageNumber + 1;
             const photoEntry = tocMap.get('photographs');
             if (photoEntry) {
-                photoEntry.contentPage = photosStartPage;
+                // The photo section always starts on a new page.
+                photoEntry.contentPage = doc.internal.getCurrentPageInfo().pageNumber + 1;
             }
 
             for (const file of imageFiles) {
@@ -2918,6 +2967,7 @@ document.addEventListener('DOMContentLoaded', () => {
             "actions-taken-hazards": "N/A",
             "recommendation-priority": "medium",
             "recommendations-summary": "1. Clean and lubricate the two roller supports at the north and south abutments.\n2. At support H-12, mechanically clean the 2-inch scratch to bare metal and apply a compatible repair coating.\n3. Continue monitoring on the standard inspection cycle.",
+            "responsible-party": "Field Operations - NH",
             "final-summary-evaluation": "The pipeline at this crossing is in generally good condition and fit for service. The primary support hangers are secure, and clearances are adequate. Two minor maintenance items were identified: stiff roller supports and a small coating scratch requiring repair. These items have been assigned a medium priority for resolution to ensure the long-term integrity of the crossing. No immediate hazards were identified.",
             "fileData": {
                 "photographs": [
